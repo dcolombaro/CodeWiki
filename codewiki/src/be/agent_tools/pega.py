@@ -28,9 +28,9 @@ def _render_document(
     if document is None:
         raise KeyError(f"Document {document_id} is not cached; select it through the graph first")
     link = f"../evidence/{provider.cache.markdown_path(document_id).name}"
-    if section and start_line is not None:
-        raise ValueError("Choose a section or a line range")
-    if section:
+    # A writer may keep the section name when following a continuation line.
+    # The explicit line window takes precedence in that case.
+    if section and start_line is None:
         start_line, section_end = document.section_bounds(section)
         end_line = section_end
     if start_line is not None:
@@ -83,9 +83,19 @@ async def read_pega_evidence(
     provider = ctx.deps.pega_provider
     if provider is None:
         raise RuntimeError("Pega provider is unavailable")
-    if provider.cache.get_document(document_id) is None:
-        await provider.get_document(document_id)
-    rendered = _render_document(provider, document_id, section, start_line, end_line)
+    if document_id not in provider._selected_document_ids:
+        available = ", ".join(sorted(provider._selected_document_ids))
+        return (
+            f"Document {document_id} was not selected by the captured graph. "
+            f"Use an exact document_id from the entity cards. "
+            f"Selected document IDs: {available}"
+        )
+    try:
+        if provider.cache.get_document(document_id) is None:
+            await provider.get_document(document_id)
+        rendered = _render_document(provider, document_id, section, start_line, end_line)
+    except (KeyError, ValueError) as exc:
+        return f"Could not read document {document_id}: {exc}. Request its headings or a valid line window."
     provider._evidence_reads.append(
         {
             "tool": "read_pega_evidence",

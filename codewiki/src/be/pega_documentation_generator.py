@@ -29,6 +29,7 @@ def _implementation_identity() -> dict[str, Any]:
         "codewiki/src/be/agent_tools/pega.py",
         "codewiki/src/be/agent_tools/str_replace_editor.py",
         "codewiki/src/be/documentation_generator.py",
+        "codewiki/src/be/llm_services.py",
         "codewiki/src/be/pega_documentation_generator.py",
         "codewiki/src/be/pega_planner.py",
         "codewiki/src/be/pega_prompts.py",
@@ -37,6 +38,7 @@ def _implementation_identity() -> dict[str, Any]:
         "codewiki/src/be/sources/pega_mcp.py",
         "codewiki/src/be/utils.py",
         "codewiki/src/config.py",
+        "scripts/pega_wiki_demo.sh",
     )
     hashes = {
         relative: digest((root / relative).read_text(encoding="utf-8"))

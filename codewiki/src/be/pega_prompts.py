@@ -1,6 +1,6 @@
 """Source-specific prompts for graph-grounded Pega documentation."""
 
-PEGA_PROMPT_VERSION = "pega-v2"
+PEGA_PROMPT_VERSION = "pega-v3"
 
 PEGA_PLANNER_PROMPT = """You plan business-oriented documentation for one selected Pega graph slice.
 The input is a complete inventory for this selected scope, not the whole application.
@@ -40,6 +40,9 @@ step or branch details when supported, Mermaid diagram with labeled configured l
 modules, and evidence/limits. Cite the local evidence links supplied by the tools for substantive
 claims. Preserve MISSING_EXPORT and AMBIGUOUS_REFERENCE as boundaries. Do not invent missing
 rules, Pega runtime outcomes, or undocumented authentication behavior.
+The module tree names sibling pages. Link related modules as [Title](Module_Name.md).
+A rule owned by another module may still be present in this captured snapshot: link that module
+instead of claiming its evidence is absent from the entire snapshot.
 
 The str_replace_editor tool may create and edit docs files. Read official PEGA
 source only through read_pega_evidence, which bounds and records each read.

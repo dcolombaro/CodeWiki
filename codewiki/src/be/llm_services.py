@@ -80,9 +80,19 @@ def _build_model_settings(config: Config, model_name: str) -> OpenAIChatModelSet
     only accept temperature=1) reject explicit values, so requests rely on the
     provider default.
     """
+    settings: OpenAIChatModelSettings
     if _should_use_max_completion_tokens(model_name, config.llm_base_url):
-        return OpenAIChatModelSettings(max_completion_tokens=config.max_tokens)
-    return OpenAIChatModelSettings(max_tokens=config.max_tokens)
+        settings = OpenAIChatModelSettings(max_completion_tokens=config.max_tokens)
+    else:
+        settings = OpenAIChatModelSettings(max_tokens=config.max_tokens)
+    # GPT-5.6 Terra's Chat Completions endpoint requires reasoning to be
+    # disabled when function tools are supplied. The module writer uses tools.
+    if (
+        model_name.lower() == "gpt-5.6-terra"
+        and config.llm_base_url.rstrip("/") == "https://api.openai.com/v1"
+    ):
+        settings["openai_reasoning_effort"] = "none"
+    return settings
 
 
 def _get_litellm_model_name(model_name: str, provider: str) -> str:

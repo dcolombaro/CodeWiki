@@ -290,6 +290,7 @@ def pega_generate_command(
                 main_model=model,
                 cluster_model=cluster_model or model,
                 fallback_model=model,
+                prompt_caching=(model_base_url.rstrip("/") != "https://api.openai.com/v1"),
                 artifacts_enabled=False,
                 with_prose=False,
             )

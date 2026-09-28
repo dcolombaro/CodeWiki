@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from codewiki.src.be.dependency_analyzer.models.core import Node
 from codewiki.src.config import Config

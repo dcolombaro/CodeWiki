@@ -493,11 +493,18 @@ class PegaGraphProvider:
         )
         if package.get("snapshot_key") != expected_key:
             raise ValueError("The saved Pega evidence package has an invalid snapshot_key")
-        if not (package.get("scope") or {}).get("complete_for_requested_scope"):
+        scope = package.get("scope")
+        if not isinstance(scope, dict) or not scope.get("complete_for_requested_scope"):
             raise ValueError("The saved Pega evidence package is partial")
         documents = package.get("documents")
+        entities = package.get("entities")
+        relationships = package.get("relationships")
         if not isinstance(documents, dict):
             raise ValueError("The saved Pega evidence package has no document manifest")
+        if not isinstance(entities, list) or not isinstance(relationships, list):
+            raise ValueError("The saved Pega evidence package has no graph inventory")
+        if scope.get("entity_count") != len(entities) or scope.get("document_count") != len(documents):
+            raise ValueError("The saved Pega evidence counts disagree with its inventory")
         self._selected_document_ids.clear()
         self._entities.clear()
         self._relationships.clear()
@@ -507,7 +514,7 @@ class PegaGraphProvider:
                 raise ValueError(f"Invalid document manifest entry for {document_id}")
             self.cache.load_document(document_id, manifest_entry)
             self._selected_document_ids.add(document_id)
-        for row in package.get("entities") or []:
+        for row in entities:
             if not isinstance(row, dict) or not isinstance(row.get("properties"), dict):
                 raise ValueError("Invalid Pega entity in saved package")
             entity = PegaEntity.from_result(row["properties"], row.get("document_ids") or [])
@@ -519,7 +526,7 @@ class PegaGraphProvider:
             if entity.id in self._entities:
                 raise ValueError(f"Duplicate Pega entity {entity.id}")
             self._entities[entity.id] = entity
-        for row in package.get("relationships") or []:
+        for row in relationships:
             if not isinstance(row, dict):
                 raise ValueError("Invalid Pega relationship in saved package")
             relation = PegaRelationship.from_result(row)

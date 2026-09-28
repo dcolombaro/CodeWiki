@@ -141,6 +141,7 @@ class PegaGraphProvider:
         self._entities: dict[str, PegaEntity] = {}
         self._relationships: dict[str, PegaRelationship] = {}
         self._requests: list[dict[str, Any]] = []
+        self._evidence_reads: list[dict[str, Any]] = []
         self._specialist_events: list[dict[str, Any]] = []
 
     async def _call(self, name: str, **arguments: Any) -> dict[str, Any] | None:

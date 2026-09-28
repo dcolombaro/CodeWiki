@@ -13,6 +13,7 @@ from codewiki.src.be.agent_tools.deps import CodeWikiDeps
 from codewiki.src.be.backend import usage_to_dict
 from codewiki.src.be.llm_services import create_fallback_models
 from codewiki.src.be.pega_prompts import PEGA_RETRIEVER_PROMPT
+from codewiki.src.be.sources.evidence import digest
 from codewiki.src.be.sources.pega_mcp import PegaGraphProvider
 
 
@@ -84,7 +85,20 @@ async def read_pega_evidence(
         raise RuntimeError("Pega provider is unavailable")
     if provider.cache.get_document(document_id) is None:
         await provider.get_document(document_id)
-    return _render_document(provider, document_id, section, start_line, end_line)
+    rendered = _render_document(provider, document_id, section, start_line, end_line)
+    provider._evidence_reads.append(
+        {
+            "tool": "read_pega_evidence",
+            "module": ctx.deps.current_module_name,
+            "document_id": document_id,
+            "section": section,
+            "start_line": start_line,
+            "end_line": end_line,
+            "returned_sha256": digest(rendered),
+            "returned_chars": len(rendered),
+        }
+    )
+    return rendered
 
 
 read_pega_evidence_tool = Tool(
@@ -97,6 +111,7 @@ read_pega_evidence_tool = Tool(
 @dataclass
 class SpecialistDeps:
     provider: PegaGraphProvider
+    module_name: str = ""
     remaining_calls: int = 8
     partial: bool = False
 
@@ -194,7 +209,20 @@ async def specialist_document(
         return '{"partial":true,"reason":"retrieval budget exhausted"}'
     if ctx.deps.provider.cache.get_document(document_id) is None:
         await ctx.deps.provider.get_document(document_id)
-    return _render_document(ctx.deps.provider, document_id, section, start_line, end_line)
+    rendered = _render_document(ctx.deps.provider, document_id, section, start_line, end_line)
+    ctx.deps.provider._evidence_reads.append(
+        {
+            "tool": "specialist_document",
+            "module": ctx.deps.module_name,
+            "document_id": document_id,
+            "section": section,
+            "start_line": start_line,
+            "end_line": end_line,
+            "returned_sha256": digest(rendered),
+            "returned_chars": len(rendered),
+        }
+    )
+    return rendered
 
 
 class SpecialistCitation(BaseModel):
@@ -230,7 +258,7 @@ async def retrieve_pega_context(ctx: RunContext[CodeWikiDeps], question: str) ->
         ],
         system_prompt=PEGA_RETRIEVER_PROMPT,
     )
-    specialist_deps = SpecialistDeps(provider)
+    specialist_deps = SpecialistDeps(provider, module_name=ctx.deps.current_module_name)
     started = time.perf_counter()
     result = await specialist.run(question, deps=specialist_deps)
     usage = getattr(result, "usage", None)
@@ -239,6 +267,7 @@ async def retrieve_pega_context(ctx: RunContext[CodeWikiDeps], question: str) ->
     provider._specialist_events.append(
         {
             "question": question,
+            "module": ctx.deps.current_module_name,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "usage": usage_to_dict(usage),
             "partial": specialist_deps.partial,

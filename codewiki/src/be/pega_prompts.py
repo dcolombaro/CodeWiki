@@ -1,6 +1,6 @@
 """Source-specific prompts for graph-grounded Pega documentation."""
 
-PEGA_PROMPT_VERSION = "pega-v1"
+PEGA_PROMPT_VERSION = "pega-v2"
 
 PEGA_PLANNER_PROMPT = """You plan business-oriented documentation for one selected Pega graph slice.
 The input is a complete inventory for this selected scope, not the whole application.
@@ -41,7 +41,8 @@ modules, and evidence/limits. Cite the local evidence links supplied by the tool
 claims. Preserve MISSING_EXPORT and AMBIGUOUS_REFERENCE as boundaries. Do not invent missing
 rules, Pega runtime outcomes, or undocumented authentication behavior.
 
-The str_replace_editor tool may create and edit docs files. It may view only the evidence cache.
+The str_replace_editor tool may create and edit docs files. Read official PEGA
+source only through read_pega_evidence, which bounds and records each read.
 {custom_instructions}"""
 
 PEGA_RETRIEVER_PROMPT = """You are a bounded Pega evidence specialist for a CodeWiki writer.

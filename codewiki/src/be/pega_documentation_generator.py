@@ -27,6 +27,7 @@ def _implementation_identity() -> dict[str, Any]:
         "codewiki/src/be/agent_tools/deps.py",
         "codewiki/src/be/agent_tools/generate_sub_module_documentations.py",
         "codewiki/src/be/agent_tools/pega.py",
+        "codewiki/src/be/agent_tools/str_replace_editor.py",
         "codewiki/src/be/documentation_generator.py",
         "codewiki/src/be/pega_documentation_generator.py",
         "codewiki/src/be/pega_planner.py",
@@ -302,6 +303,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             },
             "mcp_requests": self.provider._requests,
             "capture_requests": package.get("requests") or [],
+            "evidence_reads": self.provider._evidence_reads,
             "model_calls": self.backend.usage_events,
             "specialist_calls": self.provider._specialist_events,
         }

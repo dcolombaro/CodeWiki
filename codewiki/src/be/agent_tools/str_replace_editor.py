@@ -877,6 +877,9 @@ async def str_replace_editor(
     if path is None:
         path = file
 
+    if ctx.deps.source_kind == "pega" and working_dir == "repo":
+        return "Use read_pega_evidence with a selected official document ID for PEGA source reads."
+
     tool = EditTool(ctx.deps.registry, ctx.deps.absolute_docs_path)
     # Absolute paths would resolve *outside* the chosen working dir
     # (``Path(base) / "/abs"`` == ``/abs``); force relative paths like the caw path does.

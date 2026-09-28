@@ -177,15 +177,16 @@ Repeat the relationship and branch expansion options used for the reviewed
 snapshot when they are relevant. Pass `--plan-file` only if its `snapshot_key`
 exactly matches the new capture. The model key is removed from the PEGA MCP
 subprocess environment. Both root and recursive CodeWiki writers use the PEGA
-evidence tools; their editor read root is the local evidence cache, not the XML
-export. The specialist can search, inspect, traverse, and read selected
+evidence tools; official source reads go through the bounded evidence reader,
+not the XML export or the generic repository editor. The specialist can search, inspect, traverse, and read selected
 Markdown under a bounded retrieval budget.
 
 A successful run writes module pages, `overview.md`, the module tree, the plan,
 official document copies, directed relationship receipts, and a manifest with
 source, model, prompt, timing, and available usage metadata. Each module page
 receives a deterministic inventory of its owned rules and outgoing edges. The
-writer checks rule ownership, required pages, local citations, and local links.
+manifest records evidence section reads and their returned hashes. The writer
+checks rule ownership, required pages, local citations, and local links.
 CodeWiki's remote Mermaid renderer is disabled for this route; diagram source
 remains in Markdown. The command does not use the web viewer.
 

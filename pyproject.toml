@@ -103,6 +103,7 @@ packages = [
     "codewiki.src",
     "codewiki.src.be",
     "codewiki.src.be.agent_tools",
+    "codewiki.src.be.sources",
     "codewiki.src.be.dependency_analyzer",
     "codewiki.src.be.dependency_analyzer.analysis",
     "codewiki.src.be.dependency_analyzer.analyzers",

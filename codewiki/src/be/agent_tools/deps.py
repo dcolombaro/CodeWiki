@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 from codewiki.src.be.dependency_analyzer.models.core import Node
 from codewiki.src.config import Config
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from codewiki.src.be.sources.pega_mcp import PegaGraphProvider
 
 
 @dataclass
@@ -20,3 +24,5 @@ class CodeWikiDeps:
     # (create / str_replace / insert / undo_edit) to a docs file whose
     # absolute, resolved path is not in this set. ``None`` = unrestricted.
     allowed_write_paths: set[str] | None = None
+    source_kind: str = "code"
+    pega_provider: PegaGraphProvider | None = None

@@ -3,11 +3,9 @@ import os
 from pydantic_ai import RunContext, Tool, Agent
 
 from codewiki.src.be.agent_tools.deps import CodeWikiDeps
+from codewiki.src.be.agent_factory import module_agent_spec, module_user_prompt
 from codewiki.src.be.module_naming import plan_sub_module_specs
-from codewiki.src.be.agent_tools.read_code_components import read_code_components_tool
-from codewiki.src.be.agent_tools.str_replace_editor import str_replace_editor_tool
 from codewiki.src.be.llm_services import create_fallback_models
-from codewiki.src.be.prompt_template import SYSTEM_PROMPT, LEAF_SYSTEM_PROMPT, format_user_prompt
 from codewiki.src.be.utils import is_complex_module, count_tokens
 from codewiki.src.be.cluster_modules import format_potential_core_components
 
@@ -74,54 +72,57 @@ async def generate_sub_module_documentation(
             format_potential_core_components(core_component_ids, ctx.deps.components)[-1]
         )
 
-        if (
-            is_complex_module(ctx.deps.components, core_component_ids)
+        complex_module = (
+            (len(core_component_ids) > 8 if deps.source_kind == "pega" else is_complex_module(ctx.deps.components, core_component_ids))
             and ctx.deps.current_depth < ctx.deps.max_depth
             and num_tokens >= ctx.deps.config.max_token_per_leaf_module * ctx.deps.current_depth
-        ):
-            sub_agent = Agent(
-                model=fallback_models,
-                name=sub_module_name,
-                deps_type=CodeWikiDeps,
-                system_prompt=SYSTEM_PROMPT.format(
-                    module_name=sub_module_name, custom_instructions=ctx.deps.custom_instructions
-                ),
-                tools=[
-                    read_code_components_tool,
-                    str_replace_editor_tool,
-                    generate_sub_module_documentation_tool,
-                ],
-            )
-        else:
-            sub_agent = Agent(
-                model=fallback_models,
-                name=sub_module_name,
-                deps_type=CodeWikiDeps,
-                system_prompt=LEAF_SYSTEM_PROMPT.format(
-                    module_name=sub_module_name, custom_instructions=ctx.deps.custom_instructions
-                ),
-                tools=[read_code_components_tool, str_replace_editor_tool],
-            )
+        )
+        system_prompt, tools = module_agent_spec(
+            sub_module_name,
+            source_kind=deps.source_kind,
+            complex_module=complex_module,
+            custom_instructions=deps.custom_instructions,
+            delegation_tool=generate_sub_module_documentation_tool,
+            pega_specialist_enabled=(
+                deps.pega_provider is not None and deps.pega_provider.transport is not None
+            ),
+        )
+        sub_agent = Agent(
+            model=fallback_models,
+            name=sub_module_name,
+            deps_type=CodeWikiDeps,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
 
         deps.current_module_name = sub_module_name
         deps.path_to_current_module.append(sub_module_name)
         deps.current_depth += 1
+        previous_write_paths = deps.allowed_write_paths
+        if deps.source_kind == "pega":
+            deps.allowed_write_paths = {
+                os.path.join(deps.absolute_docs_path, f"{sub_module_name}.md")
+            }
         # log the current module tree
         # print(f"Current module tree: {json.dumps(deps.module_tree, indent=4)}")
 
-        await sub_agent.run(
-            format_user_prompt(
-                module_name=deps.current_module_name,
-                core_component_ids=core_component_ids,
-                components=ctx.deps.components,
-                module_tree=ctx.deps.module_tree,
-            ),
-            deps=ctx.deps,
-        )
-
-        # remove the sub-module name from the path to current module and the module tree
-        deps.path_to_current_module.pop()
-        deps.current_depth -= 1
+        try:
+            await sub_agent.run(
+                module_user_prompt(
+                    module_name=deps.current_module_name,
+                    core_component_ids=core_component_ids,
+                    components=ctx.deps.components,
+                    module_tree=ctx.deps.module_tree,
+                    source_kind=deps.source_kind,
+                    pega_provider=deps.pega_provider,
+                ),
+                deps=ctx.deps,
+            )
+        finally:
+            deps.path_to_current_module.pop()
+            deps.current_depth -= 1
+            deps.allowed_write_paths = previous_write_paths
+            deps.current_module_name = previous_module_name
 
     # restore the previous module name
     deps.current_module_name = previous_module_name

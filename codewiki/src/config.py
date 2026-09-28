@@ -105,6 +105,10 @@ class Config:
     # Also read the root README and docs/ as a `prose` artifact class (off by
     # default: documentation without existing prose is the benchmark setting)
     with_prose: bool = False
+    # PEGA is an explicit source mode. Normal code runs retain their parser.
+    source_kind: str = "code"
+    pega_project_id: str | None = None
+    pega_snapshot_key: str | None = None
 
     @property
     def artifact_exclude(self) -> list[str] | None:

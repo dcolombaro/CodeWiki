@@ -56,7 +56,7 @@ class DocumentationGenerator:
     ):
         self.config = config
         self.commit_id = commit_id
-        self.graph_builder = DependencyGraphBuilder(config)
+        self.graph_builder = DependencyGraphBuilder(config) if config.source_kind == "code" else None
         self.backend: LLMBackend = backend or get_backend(config)
 
     def create_documentation_metadata(
@@ -72,6 +72,9 @@ class DocumentationGenerator:
                 "generator_version": __version__,
                 "repo_path": self.config.repo_path,
                 "commit_id": self.commit_id,
+                "source_kind": self.config.source_kind,
+                "pega_project_id": self.config.pega_project_id,
+                "pega_snapshot_key": self.config.pega_snapshot_key,
             },
             "statistics": {
                 "total_components": len(components),
@@ -385,6 +388,8 @@ class DocumentationGenerator:
 
     async def run(self) -> None:
         """Run the complete documentation generation process using dynamic programming."""
+        if self.graph_builder is None:
+            raise RuntimeError("Use PegaDocumentationGenerator.run_pega for source_kind='pega'")
         try:
             # Build dependency graph
             components, leaf_nodes = self.graph_builder.build_dependency_graph()

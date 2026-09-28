@@ -246,6 +246,8 @@ async def validate_single_diagram(diagram_content: str, diagram_num: int, line_s
         Error message if invalid, empty string if valid
     """
     global _MERMAID_PY_BROKEN
+    if os.environ.get("MERMAID_VALIDATE") == "0":
+        return ""
     core_error = await _try_pythonmonkey_parse(diagram_content)
     if core_error is None:
         if _MERMAID_PY_BROKEN:

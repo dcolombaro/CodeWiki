@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic_ai import Agent
 
+from codewiki.src.be.agent_factory import module_agent_spec, module_user_prompt
 from codewiki.src.be.agent_tools.deps import CodeWikiDeps
 from codewiki.src.be.agent_tools.generate_sub_module_documentations import (
     generate_sub_module_documentation_tool,
@@ -25,11 +26,6 @@ from codewiki.src.be.agent_tools.str_replace_editor import str_replace_editor_to
 from codewiki.src.be.backend import AgentReply, LLMBackend, usage_to_dict
 from codewiki.src.be.dependency_analyzer.models.core import Node
 from codewiki.src.be.llm_services import call_llm, create_fallback_models, pop_last_usage
-from codewiki.src.be.prompt_template import (
-    format_leaf_system_prompt,
-    format_system_prompt,
-    format_user_prompt,
-)
 from codewiki.src.be.utils import is_complex_module
 from codewiki.src.config import MODULE_TREE_FILENAME, OVERVIEW_FILENAME, Config
 from codewiki.src.utils import file_manager
@@ -57,6 +53,8 @@ class PydanticAIBackend(LLMBackend):
         self._fallback_models = create_fallback_models(config)
         self._custom_instructions = config.get_prompt_addition()
         self.last_usage: dict[str, Any] | None = None
+        self.usage_events: list[dict[str, Any]] = []
+        self.pega_provider = None
 
     def complete(
         self,
@@ -64,9 +62,18 @@ class PydanticAIBackend(LLMBackend):
         *,
         model: str | None = None,
     ) -> str:
+        started = time.perf_counter()
         pop_last_usage()
         result = call_llm(prompt, self._config, model=model)
         self.last_usage = pop_last_usage()
+        self.usage_events.append(
+            {
+                "operation": "completion",
+                "model": model or self._config.main_model,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "usage": self.last_usage,
+            }
+        )
         return result
 
     async def run_update_agent(
@@ -116,30 +123,37 @@ class PydanticAIBackend(LLMBackend):
             logger.info("✓ Module docs already exists at %s", docs_path)
             return module_tree
 
-        if is_complex_module(components, core_component_ids):
-            agent = Agent(
-                self._fallback_models,
-                name=module_name,
-                deps_type=CodeWikiDeps,
-                tools=[
-                    read_code_components_tool,
-                    str_replace_editor_tool,
-                    generate_sub_module_documentation_tool,
-                ],
-                system_prompt=format_system_prompt(module_name, self._custom_instructions),
-            )
-        else:
-            agent = Agent(
-                self._fallback_models,
-                name=module_name,
-                deps_type=CodeWikiDeps,
-                tools=[read_code_components_tool, str_replace_editor_tool],
-                system_prompt=format_leaf_system_prompt(module_name, self._custom_instructions),
-            )
+        source_kind = config.source_kind
+        complex_module = (
+            len(core_component_ids) > 8
+            if source_kind == "pega"
+            else is_complex_module(components, core_component_ids)
+        )
+        system_prompt, tools = module_agent_spec(
+            module_name,
+            source_kind=source_kind,
+            complex_module=complex_module,
+            custom_instructions=self._custom_instructions,
+            delegation_tool=generate_sub_module_documentation_tool,
+            pega_specialist_enabled=(
+                self.pega_provider is not None and self.pega_provider.transport is not None
+            ),
+        )
+        agent = Agent(
+            self._fallback_models,
+            name=module_name,
+            deps_type=CodeWikiDeps,
+            tools=tools,
+            system_prompt=system_prompt,
+        )
 
         deps = CodeWikiDeps(
             absolute_docs_path=working_dir,
-            absolute_repo_path=str(os.path.abspath(config.repo_path)),
+            absolute_repo_path=(
+                str(self.pega_provider.cache.root)
+                if source_kind == "pega" and self.pega_provider is not None
+                else str(os.path.abspath(config.repo_path))
+            ),
             registry={},
             components=components,
             path_to_current_module=module_path,
@@ -149,19 +163,34 @@ class PydanticAIBackend(LLMBackend):
             current_depth=1,
             config=config,
             custom_instructions=self._custom_instructions,
+            allowed_write_paths={docs_path} if source_kind == "pega" else None,
+            source_kind=source_kind,
+            pega_provider=self.pega_provider,
         )
 
         try:
+            started = time.perf_counter()
             result = await agent.run(
-                format_user_prompt(
+                module_user_prompt(
                     module_name=module_name,
                     core_component_ids=core_component_ids,
                     components=components,
                     module_tree=deps.module_tree,
+                    source_kind=source_kind,
+                    pega_provider=self.pega_provider,
                 ),
                 deps=deps,
             )
             self.last_usage = _run_usage(result)
+            self.usage_events.append(
+                {
+                    "operation": "module_writer",
+                    "module": module_name,
+                    "model": config.main_model,
+                    "elapsed_seconds": round(time.perf_counter() - started, 3),
+                    "usage": self.last_usage,
+                }
+            )
             file_manager.save_json(deps.module_tree, module_tree_path)
             return deps.module_tree
         except Exception as e:

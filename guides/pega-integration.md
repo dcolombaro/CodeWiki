@@ -215,7 +215,9 @@ codewiki pega-compare \
 The comparison reports changed document bodies or metadata, entities, directed
 edges and qualifiers, and existing module owners affected. It labels a
 changed selection as `scope_change`; the same selection is
-`evidence_refresh`. A diff is evidence bookkeeping, so review the regenerated
+`evidence_refresh`. Older snapshots without metadata hashes still compare
+Markdown hashes and manifest fields; the report records metadata-hash coverage.
+A diff is evidence bookkeeping, so review the regenerated
 pages and citations to establish that the wiki reflects the change. This is a
 full-slice refresh, not a production incremental updater. Upstream corpus
 verification is a separate gate from retrieval readiness of a restored dump.

@@ -44,6 +44,12 @@ def _relationship_signature(row: dict[str, Any]) -> str:
     )
 
 
+def _document_signature(row: dict[str, Any]) -> str:
+    return stable_json(
+        {key: value for key, value in row.items() if key not in {"cache_path", "metadata_sha256"}}
+    )
+
+
 def _difference(
     before: dict[str, Any], after: dict[str, Any], signature
 ) -> dict[str, list[str]]:
@@ -95,10 +101,18 @@ def compare_evidence_packages(
     document_changes = _difference(
         before["documents"],
         after["documents"],
-        lambda row: stable_json(
-            {key: value for key, value in row.items() if key != "cache_path"}
-        ),
+        _document_signature,
     )
+    for document_id in before["documents"].keys() & after["documents"].keys():
+        before_metadata_hash = before["documents"][document_id].get("metadata_sha256")
+        after_metadata_hash = after["documents"][document_id].get("metadata_sha256")
+        if (
+            before_metadata_hash
+            and after_metadata_hash
+            and before_metadata_hash != after_metadata_hash
+        ):
+            document_changes["changed"].append(document_id)
+    document_changes["changed"] = sorted(set(document_changes["changed"]))
 
     affected_entities = set().union(*entity_changes.values())
     for document_id in set().union(*document_changes.values()):
@@ -135,6 +149,14 @@ def compare_evidence_packages(
         "comparison_kind": "evidence_refresh" if not selection_changed else "scope_change",
         "evidence_changed": evidence_changed,
         "source_metadata_changed": source_metadata_changed,
+        "document_metadata_hash_coverage": {
+            "before": sum(
+                bool(row.get("metadata_sha256")) for row in before["documents"].values()
+            ),
+            "after": sum(
+                bool(row.get("metadata_sha256")) for row in after["documents"].values()
+            ),
+        },
         "changes": {
             "entities": entity_changes,
             "relationships": relationship_changes,

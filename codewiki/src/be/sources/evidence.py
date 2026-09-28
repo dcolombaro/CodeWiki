@@ -169,6 +169,17 @@ class EvidenceCache:
         self.root.mkdir(parents=True, exist_ok=True)
         self._documents: dict[str, PegaDocument] = {}
 
+    @staticmethod
+    def _metadata_record(document: PegaDocument) -> dict[str, Any]:
+        return {
+            "document_id": document.id,
+            "title": document.title,
+            "source_path": document.source_path,
+            "entity_ids": list(document.entity_ids),
+            "sha256": document.sha256,
+            "properties": document.properties,
+        }
+
     def put_document(self, document: PegaDocument) -> Path:
         filename = digest(document.id)[:24]
         markdown_path = self.root / f"{filename}.md"
@@ -176,14 +187,7 @@ class EvidenceCache:
         markdown_path.write_text(document.markdown, encoding="utf-8")
         metadata_path.write_text(
             json.dumps(
-                {
-                    "document_id": document.id,
-                    "title": document.title,
-                    "source_path": document.source_path,
-                    "entity_ids": document.entity_ids,
-                    "sha256": document.sha256,
-                    "properties": document.properties,
-                },
+                self._metadata_record(document),
                 ensure_ascii=False,
                 indent=2,
                 sort_keys=True,
@@ -212,6 +216,11 @@ class EvidenceCache:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not isinstance(metadata, dict) or metadata.get("document_id") != document_id:
             raise ValueError(f"Mismatched cached document metadata for {document_id}")
+        if (
+            "metadata_sha256" in manifest_entry
+            and manifest_entry["metadata_sha256"] != digest(stable_json(metadata))
+        ):
+            raise ValueError(f"Cached official document metadata hash differs for {document_id}")
         markdown = markdown_path.read_text(encoding="utf-8")
         actual_hash = digest(markdown)
         if metadata.get("sha256") != actual_hash or manifest_entry.get("sha256") != actual_hash:
@@ -238,6 +247,7 @@ class EvidenceCache:
         return {
             document_id: {
                 "sha256": document.sha256,
+                "metadata_sha256": digest(stable_json(self._metadata_record(document))),
                 "cache_path": str(self.markdown_path(document_id).relative_to(self.root.parent)),
                 "source_path": document.source_path,
                 "entity_ids": list(document.entity_ids),

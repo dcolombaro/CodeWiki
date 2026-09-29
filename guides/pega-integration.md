@@ -188,7 +188,24 @@ receives a deterministic inventory of its owned rules and outgoing edges. The
 manifest records evidence section reads and their returned hashes. The writer
 checks rule ownership, required pages, local citations, and local links.
 CodeWiki's remote Mermaid renderer is disabled for this route; diagram source
-remains in Markdown. The command does not use the web viewer.
+remains in Markdown. The command also writes `index.html` at the run root. This
+local viewer renders the module pages, official document copies, and directed
+relationship receipts as a navigable wiki. It bundles the rendered content in
+the HTML file and makes no CDN or rendering-service requests. Mermaid diagrams
+appear as source blocks because no remote diagram renderer is used. The viewer
+contains the captured evidence and stays in the Git-ignored `runs/` directory.
+
+To view an existing run, build or refresh its viewer without another model call:
+
+```bash
+codewiki pega-viewer --run-dir runs/pega-wiki-live
+cd runs/pega-wiki-live
+python -m http.server 8765 --bind 127.0.0.1
+```
+
+Open `http://127.0.0.1:8765/index.html`. The viewer also opens directly as a
+local file because it does not fetch Markdown at runtime. Use a different port
+if 8765 is occupied. Stop the server with Ctrl-C.
 
 ## Review and refresh
 

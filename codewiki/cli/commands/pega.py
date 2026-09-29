@@ -341,4 +341,28 @@ def pega_generate_command(
         docs_path = asyncio.run(generate())
     except (RuntimeError, ValueError, KeyError, FileNotFoundError) as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"Pega CodeWiki saved to {docs_path}")
+    from codewiki.cli.pega_viewer import render_pega_viewer
+
+    try:
+        viewer_path = render_pega_viewer(output)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"Markdown saved to {docs_path}, but HTML viewer failed: {exc}") from exc
+    click.echo(f"Pega CodeWiki saved to {docs_path}; local viewer: {viewer_path}")
+
+
+@click.command("pega-viewer")
+@click.option(
+    "--run-dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Existing pega-generate output directory",
+)
+def pega_viewer_command(run_dir: Path) -> None:
+    """Build or refresh a local HTML viewer without model or MCP calls."""
+    from codewiki.cli.pega_viewer import render_pega_viewer
+
+    try:
+        output = render_pega_viewer(run_dir)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Local PEGA viewer saved to {output}")

@@ -191,8 +191,8 @@ CodeWiki's remote Mermaid renderer is disabled for this route; diagram source
 remains in Markdown. The command also writes `index.html` at the run root. This
 local viewer renders the module pages, official document copies, and directed
 relationship receipts as a navigable wiki. It bundles the rendered content in
-the HTML file and makes no CDN or rendering-service requests. Mermaid diagrams
-appear as source blocks because no remote diagram renderer is used. The viewer
+the HTML file and copies a pinned Mermaid browser bundle into `assets/` to render
+diagrams locally. It makes no CDN or rendering-service requests. The viewer
 contains the captured evidence and stays in the Git-ignored `runs/` directory.
 
 To view an existing run, build or refresh its viewer without another model call:
@@ -204,8 +204,9 @@ python -m http.server 8765 --bind 127.0.0.1
 ```
 
 Open `http://127.0.0.1:8765/index.html`. The viewer also opens directly as a
-local file because it does not fetch Markdown at runtime. Use a different port
-if 8765 is occupied. Stop the server with Ctrl-C.
+local file because it does not fetch Markdown at runtime; keep its `assets/`
+directory beside `index.html`. Use a different port if 8765 is occupied. Stop
+the server with Ctrl-C.
 
 ## Review and refresh
 

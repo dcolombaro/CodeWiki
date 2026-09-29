@@ -7,6 +7,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
@@ -167,6 +168,16 @@ def render_pega_viewer(run_dir: Path) -> Path:
     metadata_path = docs_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
     project = metadata.get("generation_info", {}).get("pega_project_id") or "PEGA"
+    scope_note = "This wiki covers a selected PEGA graph slice, not the entire project knowledge base."
+    package_path = run_dir / "evidence-package.json"
+    if package_path.is_file():
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+        scope = package.get("scope", {})
+        scope_note += (
+            f" Captured scope: {scope.get('document_count', 0)} official documents, "
+            f"{scope.get('entity_count', 0)} graph entities, "
+            f"{len(package.get('relationships', []))} directed relationships."
+        )
     template_path = Path(__file__).parent.parent / "templates" / "pega_viewer" / "viewer_template.html"
     template = template_path.read_text(encoding="utf-8")
     # Escaping '<' keeps Markdown content from closing the inline JSON script.
@@ -174,9 +185,16 @@ def render_pega_viewer(run_dir: Path) -> Path:
     rendered = (
         template.replace("{{TITLE}}", html.escape(f"{project} | PEGA CodeWiki"))
         .replace("{{PROJECT}}", html.escape(project))
+        .replace("{{SCOPE_NOTE}}", html.escape(scope_note))
         .replace("{{NAVIGATION}}", _navigation(module_tree, pages))
         .replace("{{PAGES_JSON}}", pages_json)
     )
+    vendor_dir = template_path.parent / "vendor"
+    asset_dir = run_dir / "assets"
+    asset_dir.mkdir(exist_ok=True)
+    for filename in ("mermaid-11.9.0.min.js", "MERMAID-LICENSE.txt"):
+        shutil.copyfile(vendor_dir / filename, asset_dir / filename)
+
     output = run_dir / "index.html"
     temporary = run_dir / ".index.html.tmp"
     temporary.write_text(rendered, encoding="utf-8")

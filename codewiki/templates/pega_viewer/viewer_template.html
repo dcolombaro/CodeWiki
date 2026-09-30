@@ -86,6 +86,7 @@
   <script src="assets/mermaid-11.9.0.min.js"></script>
   <script>
     const PAGES = {{PAGES_JSON}};
+    const SOURCES = {{SOURCES_JSON}};
     const DEFAULT_PAGE = 'docs/overview.md';
     let diagramNumber = 0;
     if (typeof mermaid !== 'undefined') {
@@ -161,18 +162,40 @@
         };
       } catch (_) { return {key: DEFAULT_PAGE, anchor: ''}; }
     }
-    function showPage() {
+    async function showPage() {
       let {key, anchor} = route();
-      if (!Object.hasOwn(PAGES, key)) { key = DEFAULT_PAGE; anchor = ''; }
+      if (!Object.hasOwn(PAGES, key) && !Object.hasOwn(SOURCES, key)) { key = DEFAULT_PAGE; anchor = ''; }
+      const source = SOURCES[key];
       const page = PAGES[key];
-      document.title = page.title + ' | PEGA CodeWiki';
+      const title = source ? source.title : page.title;
+      document.title = title + ' | PEGA CodeWiki';
       document.getElementById('page-kind').textContent = key.startsWith('evidence/edges/') ? 'Graph relationship' : key.startsWith('evidence/') ? 'Official source' : 'Documentation';
-      document.getElementById('page-title').textContent = page.title;
-      document.getElementById('content').innerHTML = page.html;
-      renderDiagrams();
+      document.getElementById('page-title').textContent = title;
+      const content = document.getElementById('content');
+      if (source) {
+        content.textContent = 'Loading captured Markdown…';
+        try {
+          const response = await fetch(encodeURI(key));
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          const markdown = await response.text();
+          const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(markdown));
+          const actualHash = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('');
+          if (actualHash !== source.sha256) throw new Error('The source no longer matches this wiki snapshot.');
+          if (route().key !== key) return;
+          const pre = document.createElement('pre');
+          pre.className = 'markdown-source';
+          pre.textContent = markdown;
+          content.replaceChildren(pre);
+        } catch (error) {
+          if (route().key === key) content.textContent = 'Could not load verified Markdown. Serve this wiki over localhost and keep its evidence snapshot available. ' + error.message;
+        }
+      } else {
+        content.innerHTML = page.html;
+        renderDiagrams();
+      }
       document.getElementById('raw-link').href = encodeURI(key);
       document.querySelectorAll('.nav-link').forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#/' + encodeURIComponent(key)));
-      const headings = page.headings.filter(item => item.level === 2 || item.level === 3);
+      const headings = source ? [] : page.headings.filter(item => item.level === 2 || item.level === 3);
       const toc = document.getElementById('toc');
       toc.replaceChildren();
       if (headings.length) {

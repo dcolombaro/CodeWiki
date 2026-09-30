@@ -3,35 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from typing import Any
 
 from codewiki.src.be.module_naming import RESERVED_STEMS, sanitize_module_name
-from codewiki.src.be.pega_prompts import PEGA_PLANNER_PROMPT
+from codewiki.src.be.pega_prompts import PEGA_PLANNER_PROMPT, PEGA_PROJECT_BATCH_PLANNER_PROMPT
 from codewiki.src.be.sources.pega_mcp import PegaGraphProvider
+from codewiki.src.be.utils import count_tokens
 
 
-def documented_rule_ids(package: dict[str, Any]) -> set[str]:
-    documents = package.get("documents") or {}
-    return {
-        str(entity["id"])
-        for entity in package.get("entities") or []
-        if entity.get("rule_type")
-        and not entity.get("is_external")
-        and not entity.get("is_embedded")
-        and any(document_id in documents for document_id in entity.get("document_ids") or [])
-    }
-
-
-def plan_modules(
-    package: dict[str, Any], provider: PegaGraphProvider, backend: Any, cluster_model: str | None
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Ask for a business tree, then prove exact in-scope rule ownership."""
-    scope_ids = documented_rule_ids(package)
-    if not scope_ids:
-        raise ValueError("The Pega slice has no documented rule entities")
+def _planner_cards(
+    package: dict[str, Any],
+    provider: PegaGraphProvider,
+    entity_ids: set[str],
+) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for entity in package["entities"]:
-        if entity["id"] not in scope_ids:
+        if entity["id"] not in entity_ids:
             continue
         card = {
             key: entity.get(key)
@@ -43,8 +31,8 @@ def plan_modules(
                 continue
             for heading in ("Functional synthesis", "Extracted configuration"):
                 try:
-                    purpose, line = document.section(heading, max_chars=900)
-                    card["semantic_excerpt"] = purpose
+                    section_text, line = document.section(heading)
+                    card["semantic_section_text"] = section_text
                     card["semantic_citation"] = f"{document_id} line {line}"
                     card["semantic_section"] = heading
                     card["semantic_authority"] = (
@@ -55,25 +43,115 @@ def plan_modules(
                     break
                 except KeyError:
                     continue
-            if card.get("semantic_excerpt"):
+            if card.get("semantic_section_text"):
                 break
         cards.append(card)
-    relation_cards = [
-        {
+    return cards
+
+
+def _planner_relationship_cards(
+    package: dict[str, Any], entity_ids: set[str]
+) -> list[dict[str, Any]]:
+    bookkeeping_properties = {"document_id", "id", "managed_by", "project_id", "projection_token"}
+    cards = []
+    for edge in package.get("relationships") or []:
+        source_id = edge["source_entity_id"]
+        target_id = edge["target_entity_id"]
+        if source_id not in entity_ids and target_id not in entity_ids:
+            continue
+        properties = edge.get("properties") or {}
+        card = {
             "id": edge["id"],
             "type": edge["relationship_type"],
-            "source_entity_id": edge["source_entity_id"],
-            "target_entity_id": edge["target_entity_id"],
-            "condition": edge["properties"].get("condition"),
-            "qualifiers_json": edge["properties"].get("qualifiers_json"),
-            "resolution_outcome": edge["properties"].get("resolution_outcome"),
+            "source_entity_id": source_id,
+            "target_entity_id": target_id,
+            "document_id": edge.get("document_id") or properties.get("document_id"),
         }
-        for edge in package.get("relationships") or []
-    ]
-    prompt = PEGA_PLANNER_PROMPT.format(
-        project=package["project_id"],
+        card.update({
+            key: value
+            for key, value in properties.items()
+            if key not in bookkeeping_properties and value not in (None, "")
+        })
+        cards.append(card)
+    return cards
+
+
+def _planner_context_cards(
+    package: dict[str, Any], entity_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Describe endpoints adjacent to owners without making them page owners."""
+    incident = _planner_relationship_cards(package, entity_ids)
+    context_ids = {
+        endpoint
+        for edge in incident
+        for endpoint in (edge["source_entity_id"], edge["target_entity_id"])
+        if endpoint not in entity_ids
+    }
+    entities = {
+        entity["id"]: entity
+        for entity in [*(package.get("entities") or []), *(package.get("context_entities") or [])]
+    }
+    cards = []
+    for entity_id in sorted(context_ids):
+        entity = entities.get(entity_id)
+        if entity is None:
+            continue
+        cards.append({
+            "id": entity_id,
+            "name": entity.get("name"),
+            "entity_type": entity.get("entity_type"),
+            "rule_type": entity.get("rule_type"),
+            "rule_category": entity.get("rule_category"),
+            "class_name": entity.get("class_name"),
+            "ruleset": entity.get("ruleset"),
+            "is_external": entity.get("is_external"),
+            "is_embedded": entity.get("is_embedded"),
+            "document_ids": entity.get("document_ids") or [],
+            "role": "context_only",
+        })
+    return cards
+
+
+def _planner_prompt(
+    project: str,
+    cards: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    context_cards: list[dict[str, Any]],
+    *,
+    project_batch: bool,
+) -> str:
+    template = PEGA_PROJECT_BATCH_PLANNER_PROMPT if project_batch else PEGA_PLANNER_PROMPT
+    return template.format(
+        project=project,
         cards=json.dumps(cards, ensure_ascii=False),
-        relationships=json.dumps(relation_cards, ensure_ascii=False),
+        relationships=json.dumps(relationships, ensure_ascii=False),
+        context_cards=json.dumps(context_cards, ensure_ascii=False),
+    )
+
+
+def documented_rule_ids(package: dict[str, Any]) -> set[str]:
+    documents = package.get("documents") or {}
+    return {
+        str(entity["id"])
+        for entity in package.get("entities") or []
+        if entity.get("rule_type")
+        and any(document_id in documents for document_id in entity.get("document_ids") or [])
+    }
+
+
+def plan_modules(
+    package: dict[str, Any], provider: PegaGraphProvider, backend: Any, cluster_model: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Ask for a business tree, then prove exact in-scope rule ownership."""
+    scope_ids = documented_rule_ids(package)
+    if not scope_ids:
+        raise ValueError("The Pega slice has no documented rule entities")
+    project_batch = (package.get("scope") or {}).get("mode") in {"project", "project_batch"}
+    cards = _planner_cards(package, provider, scope_ids)
+    relation_cards = _planner_relationship_cards(package, scope_ids)
+    context_cards = _planner_context_cards(package, scope_ids)
+    prompt = _planner_prompt(
+        package["project_id"], cards, relation_cards, context_cards, project_batch=project_batch
     )
     answer = backend.complete(prompt, model=cluster_model)
     if not isinstance(answer, str) or not answer.strip():
@@ -83,6 +161,135 @@ def plan_modules(
         cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
     proposed = json.loads(cleaned)
     return validate_plan(package, proposed)
+
+
+def _project_batches(
+    package: dict[str, Any],
+    provider: PegaGraphProvider,
+    *,
+    prompt_token_target: int,
+) -> list[list[str]]:
+    """Pack complete ruleset/class groups by prompt size, without splitting rules."""
+    selected = documented_rule_ids(package)
+    if not selected:
+        raise ValueError("The Pega project has no documented rule entities")
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entity in package["entities"]:
+        if entity["id"] in selected:
+            groups[(str(entity.get("ruleset") or ""), str(entity.get("class_name") or ""))].append(entity)
+    groups_by_ids: list[list[str]] = []
+    for group_key in sorted(groups):
+        members = sorted(
+            groups[group_key],
+            key=lambda item: (str(item.get("rule_category") or ""), str(item.get("name") or ""), item["id"]),
+        )
+        groups_by_ids.append([entity["id"] for entity in members])
+
+    batches: list[list[str]] = []
+    current: list[str] = []
+    for group_ids in groups_by_ids:
+        candidate = [*current, *group_ids]
+        candidate_set = set(candidate)
+        candidate_cards = _planner_cards(package, provider, candidate_set)
+        candidate_relations = _planner_relationship_cards(package, candidate_set)
+        candidate_context = _planner_context_cards(package, candidate_set)
+        candidate_prompt = _planner_prompt(
+            package["project_id"],
+            candidate_cards,
+            candidate_relations,
+            candidate_context,
+            project_batch=True,
+        )
+        if current and count_tokens(candidate_prompt) > prompt_token_target:
+            batches.append(current)
+            current = list(group_ids)
+            # An individual ruleset/class group remains whole even if it is
+            # larger than the target; semantic sections are never truncated.
+            group_set = set(current)
+            group_cards = _planner_cards(package, provider, group_set)
+            group_relations = _planner_relationship_cards(package, group_set)
+            group_context = _planner_context_cards(package, group_set)
+            group_prompt = _planner_prompt(
+                package["project_id"], group_cards, group_relations, group_context, project_batch=True
+            )
+            if count_tokens(group_prompt) > prompt_token_target:
+                batches.append(current)
+                current = []
+        else:
+            current = candidate
+    if current:
+        batches.append(current)
+    if set().union(*(set(batch) for batch in batches)) != selected:
+        raise RuntimeError("Project planner batches do not cover every documented rule")
+    return batches
+
+
+def plan_project_modules(
+    package: dict[str, Any], provider: PegaGraphProvider, backend: Any, cluster_model: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Plan a complete project by ruleset/class groups and validate exact ownership."""
+    prompt_token_target = int(
+        getattr(getattr(backend, "_config", None), "max_token_per_module", 36_369)
+    )
+    batches = _project_batches(
+        package, provider, prompt_token_target=max(1, prompt_token_target)
+    )
+    all_entities = {entity["id"]: entity for entity in package["entities"]}
+    proposed_modules: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    fallback_batches: list[dict[str, Any]] = []
+    for batch_number, batch in enumerate(batches, 1):
+        selected = set(batch)
+        incident_edges = [
+            edge for edge in package["relationships"]
+            if edge["source_entity_id"] in selected or edge["target_entity_id"] in selected
+        ]
+        context_ids = {
+            endpoint
+            for edge in incident_edges
+            for endpoint in (edge["source_entity_id"], edge["target_entity_id"])
+            if endpoint not in selected
+        }
+        partial = {
+            **package,
+            "scope": {**package["scope"], "mode": "project_batch"},
+            "entities": [all_entities[entity_id] for entity_id in batch],
+            "relationships": incident_edges,
+            "context_entities": [all_entities[entity_id] for entity_id in sorted(context_ids)],
+        }
+        class_name = str(all_entities[batch[0]].get("class_name") or "Project")
+        subject = sanitize_module_name("_".join(class_name.split("-")[-2:]))[:40]
+        try:
+            _, batch_plan = plan_modules(partial, provider, backend, cluster_model)
+        except (ValueError, KeyError) as exc:
+            # Preserve complete ownership when a model omits or repeats an ID.
+            # The explicit fallback remains visible in plan.json for review.
+            fallback_batches.append({"batch": batch_number, "reason": str(exc)[:300]})
+            batch_plan = {"modules": [{
+                "name": sanitize_module_name(f"{subject}_Rules"),
+                "purpose": f"Documented rules associated with {class_name}; grouping requires review.",
+                "entity_ids": batch,
+            }]}
+        for module in batch_plan["modules"]:
+            base = module["name"]
+            candidate = base
+            if candidate.casefold() in used_names or candidate.casefold() in RESERVED_STEMS:
+                candidate = sanitize_module_name(f"{subject}_{base}")
+            index = 2
+            while candidate.casefold() in used_names or candidate.casefold() in RESERVED_STEMS:
+                candidate = sanitize_module_name(f"{subject}_{base}_{index}")
+                index += 1
+            used_names.add(candidate.casefold())
+            proposed_modules.append({**module, "name": candidate})
+    tree, plan = validate_plan(package, {"modules": proposed_modules})
+    plan["planning"] = {
+        "mode": "ruleset_class_groups",
+        "batch_count": len(batches),
+        "rule_counts_by_batch": [len(batch) for batch in batches],
+        "prompt_token_target": prompt_token_target,
+        "fallback_batches": fallback_batches,
+    }
+    return tree, plan
 
 
 def validate_plan(

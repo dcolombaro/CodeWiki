@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,7 +54,7 @@ class PegaEntity:
 
     @property
     def documented_rule(self) -> bool:
-        return bool(self.document_ids and self.rule_type) and not self.is_external and not self.is_embedded
+        return bool(self.document_ids and self.rule_type)
 
     def card(self) -> dict[str, Any]:
         return {
@@ -152,22 +154,43 @@ class PegaDocument:
             return index + 1, end
         raise KeyError(f"Section {heading!r} not found in {self.id}")
 
-    def section(self, heading: str, *, max_chars: int = 16000) -> tuple[str, int]:
-        """Return a bounded Markdown section preview and its first line."""
+    def section(
+        self, heading: str, *, max_chars: int | None = None
+    ) -> tuple[str, int]:
+        """Return the complete Markdown section unless a caller requests truncation."""
         start, end = self.section_bounds(heading)
         body = "\n".join(self.markdown.splitlines()[start - 1 : end]).strip()
-        if len(body) > max_chars:
+        if max_chars is not None and len(body) > max_chars:
             return body[:max_chars] + "\n[Section truncated; request a line range]", start
         return body, start
 
 
 class EvidenceCache:
-    """Cache only graph-selected official Markdown and its MCP metadata."""
+    """Index graph-selected Markdown without copying the PEGA Agent source."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, source_root: Path | None = None) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.source_root = source_root.resolve() if source_root is not None else None
         self._documents: dict[str, PegaDocument] = {}
+
+    def _source_path(self, source_path: str) -> Path:
+        if not source_path:
+            raise ValueError("PEGA document has no source_path")
+        candidate = Path(source_path).expanduser()
+        if not candidate.is_absolute():
+            if self.source_root is None:
+                raise ValueError(f"Relative PEGA source_path has no configured source root: {source_path}")
+            candidate = self.source_root / candidate
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError(f"PEGA source_path is not a file: {resolved}")
+        if self.source_root is not None:
+            try:
+                resolved.relative_to(self.source_root)
+            except ValueError as exc:
+                raise ValueError(f"PEGA source_path escapes the configured input root: {resolved}") from exc
+        return resolved
 
     @staticmethod
     def _metadata_record(document: PegaDocument) -> dict[str, Any]:
@@ -184,7 +207,26 @@ class EvidenceCache:
         filename = digest(document.id)[:24]
         markdown_path = self.root / f"{filename}.md"
         metadata_path = self.root / f"{filename}.json"
-        markdown_path.write_text(document.markdown, encoding="utf-8")
+        source_path = self._source_path(document.source_path)
+        source_markdown = source_path.read_text(encoding="utf-8")
+        if digest(source_markdown) != document.sha256:
+            raise ValueError(
+                f"PEGA Agent Markdown changed while being captured: {source_path}; "
+                f"MCP SHA-256 {document.sha256}, local SHA-256 {digest(source_markdown)}"
+            )
+        properties = dict(document.properties)
+        properties["source_path"] = str(source_path)
+        document = PegaDocument(
+            id=document.id,
+            title=document.title,
+            markdown=source_markdown,
+            source_path=str(source_path),
+            entity_ids=document.entity_ids,
+            properties=properties,
+        )
+        if markdown_path.exists() or markdown_path.is_symlink():
+            markdown_path.unlink()
+        markdown_path.symlink_to(source_path)
         metadata_path.write_text(
             json.dumps(
                 self._metadata_record(document),
@@ -200,19 +242,33 @@ class EvidenceCache:
     def get_document(self, document_id: str) -> PegaDocument | None:
         return self._documents.get(document_id)
 
-    def load_document(self, document_id: str, manifest_entry: dict[str, Any]) -> PegaDocument:
-        """Load and verify a document captured by a previous snapshot run."""
+    def load_document(
+        self,
+        document_id: str,
+        manifest_entry: dict[str, Any],
+        *,
+        verify_content: bool = True,
+    ) -> PegaDocument:
+        """Load captured metadata and, unless requested otherwise, verify current source bytes."""
         filename = digest(document_id)[:24]
         expected_path = f"{self.root.name}/{filename}.md"
         if manifest_entry.get("cache_path") != expected_path:
             raise ValueError(f"Unexpected cache path for {document_id}")
         markdown_path = self.root / f"{filename}.md"
         metadata_path = self.root / f"{filename}.json"
-        for path in (markdown_path, metadata_path):
-            try:
-                path.resolve(strict=True).relative_to(self.root)
-            except (OSError, ValueError) as exc:
-                raise ValueError(f"Cached evidence path is missing or escapes cache: {path}") from exc
+        try:
+            resolved_metadata = metadata_path.resolve(strict=True)
+            if metadata_path.is_symlink():
+                if (
+                    resolved_metadata.name != metadata_path.name
+                    or resolved_metadata.parent.name != "evidence"
+                    or not (resolved_metadata.parent.parent / "evidence-package.json").is_file()
+                ):
+                    raise ValueError(f"Evidence symlink does not target captured metadata: {metadata_path}")
+            else:
+                resolved_metadata.relative_to(self.root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Cached evidence path is missing or invalid: {metadata_path}") from exc
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not isinstance(metadata, dict) or metadata.get("document_id") != document_id:
             raise ValueError(f"Mismatched cached document metadata for {document_id}")
@@ -221,14 +277,41 @@ class EvidenceCache:
             and manifest_entry["metadata_sha256"] != digest(stable_json(metadata))
         ):
             raise ValueError(f"Cached official document metadata hash differs for {document_id}")
-        markdown = markdown_path.read_text(encoding="utf-8")
-        actual_hash = digest(markdown)
-        if metadata.get("sha256") != actual_hash or manifest_entry.get("sha256") != actual_hash:
-            raise ValueError(f"Cached official Markdown hash differs for {document_id}")
         if metadata.get("source_path") != manifest_entry.get("source_path"):
             raise ValueError(f"Cached source path differs for {document_id}")
         if sorted(metadata.get("entity_ids") or []) != sorted(manifest_entry.get("entity_ids") or []):
             raise ValueError(f"Cached linked entities differ for {document_id}")
+        markdown = ""
+        if verify_content:
+            # New captures link straight to the PEGA Agent source. Legacy
+            # snapshots may still contain a regular cached Markdown file, and
+            # old frozen wiki runs may link to that snapshot's evidence folder.
+            if markdown_path.is_symlink():
+                try:
+                    resolved_markdown = markdown_path.resolve(strict=True)
+                except OSError as exc:
+                    raise ValueError(f"Cached official Markdown is missing: {markdown_path}") from exc
+                recorded_source = Path(str(metadata.get("source_path") or "")).expanduser()
+                is_source_link = (
+                    recorded_source.is_absolute()
+                    and resolved_markdown == recorded_source.resolve()
+                )
+                is_legacy_snapshot_link = (
+                    resolved_markdown.name == markdown_path.name
+                    and resolved_markdown.parent.name == "evidence"
+                    and (resolved_markdown.parent.parent / "evidence-package.json").is_file()
+                )
+                if not (is_source_link or is_legacy_snapshot_link):
+                    raise ValueError(f"Evidence symlink does not target its recorded Markdown source: {markdown_path}")
+            else:
+                try:
+                    markdown_path.resolve(strict=True).relative_to(self.root)
+                except (OSError, ValueError) as exc:
+                    raise ValueError(f"Cached evidence path is missing or invalid: {markdown_path}") from exc
+            markdown = markdown_path.read_text(encoding="utf-8")
+            actual_hash = digest(markdown)
+            if metadata.get("sha256") != actual_hash or manifest_entry.get("sha256") != actual_hash:
+                raise ValueError(f"Cached official Markdown hash differs for {document_id}")
         document = PegaDocument(
             id=document_id,
             title=str(metadata.get("title") or document_id),
@@ -242,6 +325,41 @@ class EvidenceCache:
 
     def markdown_path(self, document_id: str) -> Path:
         return self.root / f"{digest(document_id)[:24]}.md"
+
+    def publish_to(
+        self,
+        target: Path,
+        *,
+        bundle: bool = False,
+        document_ids: set[str] | None = None,
+    ) -> None:
+        """Expose source links and metadata to a generated run without copying Markdown.
+
+        ``bundle=True`` remains available for portable runs that deliberately
+        embed the source Markdown and metadata.
+        """
+        target = target.resolve()
+        if target == self.root:
+            return
+        target.mkdir(parents=True, exist_ok=True)
+        selected = set(self._documents) if document_ids is None else document_ids
+        missing = selected - set(self._documents)
+        if missing:
+            raise KeyError(f"Evidence cache does not contain documents: {sorted(missing)}")
+        for document_id in sorted(selected):
+            filename = f"{digest(document_id)[:24]}"
+            for suffix in (".md", ".json"):
+                source = self.root / f"{filename}{suffix}"
+                destination = target / source.name
+                if not source.is_file():
+                    raise FileNotFoundError(f"Captured PEGA evidence is missing: {source}")
+                if destination.exists() or destination.is_symlink():
+                    destination.unlink()
+                if bundle:
+                    shutil.copy2(source, destination)
+                else:
+                    relative_source = os.path.relpath(source.resolve(), target)
+                    destination.symlink_to(relative_source)
 
     def manifest(self) -> dict[str, Any]:
         return {

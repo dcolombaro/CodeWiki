@@ -21,6 +21,10 @@ instead of receiving large payloads through the MCP stdio channel.
   - ``generate_docs``     — Full documentation generation (black-box)
   - ``get_module_tree``   — Retrieve existing module clustering
 
+**Fork-specific PEGA tool (requires PEGA MCP and model environment):**
+  - ``generate_pega_docs`` — Capture the whole PEGA project or a focused graph
+    slice, freeze its evidence package, and generate a PEGA wiki
+
 Usage:
     python -m codewiki.mcp.server
 
@@ -361,6 +365,79 @@ def _legacy_tools() -> list[Tool]:
     ]
 
 
+def _pega_generation_tool() -> Tool:
+    """Return the fork-only chat entry point for PEGA documentation."""
+    return Tool(
+        name="generate_pega_docs",
+        description=(
+            "Generate or refresh PEGA documentation through one automatic workflow. "
+            "The tool checks the current project projection, reuses matching cached "
+            "evidence when possible, and retrieves graph and Markdown evidence when "
+            "the cache is stale or does not cover the request. With no seed it "
+            "documents the complete project. For a focused request, pass an exact "
+            "PEGA entity name or ID and optional traversal depth. A complete cached "
+            "project graph can provide a focused slice locally. Matching previous "
+            "wiki pages are reused automatically; set replan=true to rerun planning "
+            "and all writers from the cached evidence. Requires the PEGA and model "
+            "environment variables documented in the runbook."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "PEGA project ID; defaults to PEGA_PROJECT_ID from the MCP environment",
+                },
+                "seed_name": {
+                    "type": "string",
+                    "description": "Exact PEGA entity name for a focused activity/workflow/documentation request",
+                },
+                "seed_id": {
+                    "type": "string",
+                    "description": "Exact project-prefixed PEGA graph entity ID for a focused request",
+                },
+                "rule_type": {"type": "string", "description": "Optional type filter to disambiguate seed_name"},
+                "class_name": {"type": "string", "description": "Optional Applies-To class filter to disambiguate seed_name"},
+                "ruleset": {"type": "string", "description": "Optional ruleset filter to disambiguate seed_name"},
+                "depth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 1,
+                    "description": "Focused-slice traversal depth; use 2 when documenting a connected workflow",
+                },
+                "relationship_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional edge types to follow; omitted means follow all domain relationship types",
+                },
+                "expand_entity_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional entities already in the slice whose neighbors should be included one additional hop",
+                },
+                "max_documents": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 40,
+                    "description": "Maximum official documents in a focused slice",
+                },
+                "replan": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Reuse current evidence but rerun planning and all page writers",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Optional empty output directory; otherwise a unique directory is created under CODEWIKI_PEGA_OUTPUT_ROOT or ./runs",
+                },
+            },
+            "required": [],
+        },
+    )
+
+
 # ===================================================================
 #  Tool dispatch
 # ===================================================================
@@ -369,7 +446,7 @@ def _legacy_tools() -> list[Tool]:
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List all available CodeWiki MCP tools."""
-    return _fine_grained_tools() + _legacy_tools()
+    return _fine_grained_tools() + _legacy_tools() + [_pega_generation_tool()]
 
 
 _analyze_lock = asyncio.Lock()
@@ -460,6 +537,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         elif name == "get_module_tree":
             return await _legacy_get_module_tree(arguments)
+
+        elif name == "generate_pega_docs":
+            from codewiki.mcp.tools.pega_generation import handle_generate_pega_docs
+
+            result = await asyncio.to_thread(handle_generate_pega_docs, arguments)
+            return [_text(result)]
 
         else:
             return [_text(json.dumps({"error": f"Unknown tool: {name}"}))]

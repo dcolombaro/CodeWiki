@@ -13,7 +13,8 @@ CodeWiki's own generated documentation and is not edited by hand.
 | [Providers and models](providers.md) | Connect an API key, Atlas Cloud, Azure, Bedrock, or run on a Claude / Codex subscription |
 | [Artifact-aware generation](artifact-aware-generation.md) | Understand how build, CI, container, and config files get documented, and how to tune or turn it off |
 | [Incremental updates](incremental-updates.md) | Keep documentation current with `--update` and understand what it will and will not touch |
-| [MCP / IDE-driven mode](mcp-ide-mode.md) | Run CodeWiki as an MCP server inside Cursor, Claude Desktop, Claude Code, or CodeBuddy, with no LLM configuration |
+| [PEGA CodeWiki runbook](pega-runbook.md) | View the PEGA graph, module tree, run artifacts, and follow the PEGA-specific generation path |
+| [MCP / IDE-driven mode](mcp-ide-mode.md) | Run CodeWiki's source-code tools or this fork's PEGA generation tool from an MCP-capable chat |
 | [Development guide](development.md) | Change CodeWiki: project layout, pipeline, adding a language, tests, releasing |
 | [Docker setup](docker.md) | Run the web application in a container |
 

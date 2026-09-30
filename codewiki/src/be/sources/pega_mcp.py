@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -125,6 +126,7 @@ class PegaGraphProvider:
         *,
         project: str,
         cache_dir: Path,
+        source_root: Path | None = None,
         max_pages: int = 30,
     ) -> None:
         if not project.strip():
@@ -133,10 +135,14 @@ class PegaGraphProvider:
             raise ValueError("max_pages must be positive")
         self.transport = transport
         self.project = project
-        self.cache = EvidenceCache(cache_dir)
+        self.cache = EvidenceCache(cache_dir, source_root=source_root)
         self.max_pages = max_pages
         self.status: dict[str, Any] | None = None
         self.schema: dict[str, Any] | None = None
+        self.project_revision: str | None = None
+        self.project_manifest_hash: str | None = None
+        self.project_projection_status: str | None = None
+        self.has_project_manifest = False
         self._selected_document_ids: set[str] = set()
         self._entities: dict[str, PegaEntity] = {}
         self._relationships: dict[str, PegaRelationship] = {}
@@ -155,7 +161,7 @@ class PegaGraphProvider:
             raise TypeError(f"Pega MCP {name} returned {type(result).__name__}, expected object")
         return result
 
-    async def initialize(self) -> None:
+    async def initialize(self, *, lightweight: bool = False) -> None:
         projects = await self._call("list_projects") or {}
         known = {
             str(item.get("project_id"))
@@ -167,11 +173,87 @@ class PegaGraphProvider:
         self.status = await self._call("kb_status") or {}
         if self.status.get("project_id") != self.project:
             raise ValueError("kb_status returned a different project")
+        self.schema = None if lightweight else await self._call("describe_graph") or {}
+
+    async def load_schema(self) -> dict[str, Any]:
+        if self.status is None:
+            raise RuntimeError("Call initialize() before loading the Pega graph schema")
         self.schema = await self._call("describe_graph") or {}
+        return self.schema
+
+    async def project_projection_tokens(self) -> list[str]:
+        """Read the existing project manifest, falling back to projected row tokens.
+
+        The manifest is queried directly through the existing PEGA MCP Cypher
+        reader. This keeps freshness checks independent of changes to the
+        PEGA Agent tool contract.
+        """
+        if self.status is None:
+            raise RuntimeError("Call initialize() before checking the Pega project revision")
+        manifest = await self._call(
+            "read_cypher",
+            statement=(
+                "OPTIONAL MATCH (manifest:KBProject {project_id: $project_id}) "
+                "RETURN collect(manifest.projection_manifest_hash)[0] AS projection_manifest_hash, "
+                "collect(manifest.status)[0] AS projection_status"
+            ),
+            parameters={},
+        ) or {}
+        manifest_rows = manifest.get("rows")
+        if not isinstance(manifest_rows, list) or len(manifest_rows) != 1:
+            raise ValueError("Project manifest query returned an invalid result")
+        manifest_hash = manifest_rows[0].get("projection_manifest_hash")
+        self.project_manifest_hash = str(manifest_hash) if manifest_hash else None
+        self.project_projection_status = manifest_rows[0].get("projection_status")
+        self.has_project_manifest = bool(self.project_manifest_hash)
+        if self.project_manifest_hash:
+            self.project_revision = self.project_manifest_hash
+            return [self.project_manifest_hash]
+
+        result = await self._call(
+            "read_cypher",
+            statement=(
+                "MATCH (entity:PegaEntity {project_id: $project_id}) "
+                "RETURN collect(DISTINCT entity.projection_token) AS projection_tokens"
+            ),
+            parameters={},
+        ) or {}
+        rows = result.get("rows")
+        if not isinstance(rows, list) or len(rows) != 1:
+            raise ValueError("Project projection revision query returned an invalid result")
+        values = rows[0].get("projection_tokens")
+        if not isinstance(values, list):
+            raise ValueError("Project projection revision query returned no token list")
+        tokens = sorted({str(value) for value in values if value})
+        self.project_revision = digest(stable_json(tokens)) if tokens else None
+        return tokens
 
     def _require_initialized(self) -> None:
         if self.status is None or self.schema is None:
             raise RuntimeError("Call initialize() before Pega retrieval")
+
+    def _require_ready_status(self) -> None:
+        assert self.status is not None
+        projection_status = (
+            self.status.get("projection_status") or self.project_projection_status
+        )
+        if projection_status and projection_status != "ready":
+            raise RuntimeError(
+                f"PEGA project projection is {projection_status!r}; wait until indexing is ready"
+            )
+
+    async def _verify_status_unchanged(self) -> dict[str, Any]:
+        assert self.status is not None
+        latest = await self._call("kb_status") or {}
+        for key in (
+            "entities", "documents", "relationships",
+            "projection_manifest_hash", "projection_status",
+        ):
+            if latest.get(key) != self.status.get(key):
+                raise RuntimeError(f"PEGA project {key} changed during evidence capture")
+        self.status = latest
+        self._require_ready_status()
+        return latest
 
     def _remember_candidates(self, payload: dict[str, Any]) -> None:
         for candidate in payload.get("candidate_documents") or []:
@@ -333,6 +415,7 @@ class PegaGraphProvider:
     ) -> dict[str, Any]:
         """Capture a bounded graph slice and official documents into the cache."""
         self._require_initialized()
+        self._require_ready_status()
         self._check_id(seed_entity_id, "entity")
         if not 1 <= depth <= 8:
             raise ValueError("depth must be between 1 and 8")
@@ -413,7 +496,7 @@ class PegaGraphProvider:
             )
             if properties.get("projection_token")
         }
-        if len(projection_tokens) > 1:
+        if len(projection_tokens) > 1 and not self.has_project_manifest:
             raise RuntimeError("Pega slice contains mixed projection tokens; capture a stable KB")
         document_ids = sorted(
             {
@@ -429,6 +512,7 @@ class PegaGraphProvider:
             )
         for document_id in document_ids:
             await self.get_document(document_id)
+        await self._verify_status_unchanged()
         package = {
             "source_kind": "pega",
             "project_id": self.project,
@@ -476,12 +560,152 @@ class PegaGraphProvider:
         )
         return package
 
+    async def snapshot_project(self) -> dict[str, Any]:
+        """Capture every project entity, domain edge, and linked official document.
+
+        Search pagination establishes the entity/document inventory. A fixed,
+        project-scoped Cypher query enumerates directed edges in stable ID order;
+        this avoids depending on a guessed entry rule or graph connectivity.
+        """
+        self._require_initialized()
+        assert self.status is not None
+        self._require_ready_status()
+        expected_entities = int(self.status.get("entities", -1))
+        expected_documents = int(self.status.get("documents", -1))
+        if expected_entities < 1 or expected_documents < 1:
+            raise ValueError("The project KB has no complete entity/document inventory")
+
+        entities = await self.search_entities("", include_external=True)
+        entity_ids = {entity.id for entity in entities}
+        if len(entities) != len(entity_ids) or len(entity_ids) != expected_entities:
+            raise RuntimeError(
+                f"Project entity inventory is incomplete: {len(entity_ids)} unique "
+                f"of {expected_entities} reported by kb_status"
+            )
+
+        edge_pattern = (
+            "MATCH (source:PegaEntity {project_id: $project_id})"
+            "-[edge {project_id: $project_id}]->"
+            "(target:PegaEntity {project_id: $project_id}) "
+        )
+        count_result = await self._call(
+            "read_cypher",
+            statement=edge_pattern + "RETURN count(edge) AS relationship_count",
+            parameters={},
+        ) or {}
+        count_rows = count_result.get("rows")
+        if not isinstance(count_rows, list) or len(count_rows) != 1:
+            raise ValueError("Project relationship count query returned an invalid result")
+        expected_edges = int(count_rows[0].get("relationship_count", -1))
+        if expected_edges < 0:
+            raise ValueError("Project relationship count is unavailable")
+
+        page_size = 500
+        relationships: dict[str, PegaRelationship] = {}
+        for offset in range(0, expected_edges, page_size):
+            result = await self._call(
+                "read_cypher",
+                statement=(
+                    edge_pattern
+                    + "RETURN source.id AS source_entity_id, "
+                    "target.id AS target_entity_id, "
+                    "type(edge) AS relationship_type, properties(edge) AS evidence "
+                    "ORDER BY edge.id SKIP $offset LIMIT $limit"
+                ),
+                parameters={"offset": offset, "limit": page_size},
+            ) or {}
+            rows = result.get("rows")
+            if not isinstance(rows, list) or len(rows) != min(page_size, expected_edges - offset):
+                raise RuntimeError(f"Project relationship page at offset {offset} is incomplete")
+            for row in rows:
+                relation = PegaRelationship.from_result(row)
+                if relation.id in relationships:
+                    raise RuntimeError(f"Duplicate project relationship ID {relation.id}")
+                if relation.source_entity_id not in entity_ids or relation.target_entity_id not in entity_ids:
+                    raise RuntimeError(f"Project relationship {relation.id} has an unknown endpoint")
+                relationships[relation.id] = relation
+                if relation.document_id:
+                    self._selected_document_ids.add(relation.document_id)
+        if len(relationships) != expected_edges:
+            raise RuntimeError("Project relationship inventory changed during pagination")
+        self._relationships = relationships
+
+        document_ids = sorted({document_id for entity in entities for document_id in entity.document_ids})
+        if len(document_ids) != expected_documents:
+            raise RuntimeError(
+                f"Project document inventory is incomplete: {len(document_ids)} linked "
+                f"of {expected_documents} reported by kb_status"
+            )
+        if any(relation.document_id and relation.document_id not in document_ids for relation in relationships.values()):
+            raise RuntimeError("A project relationship references a document outside the inventory")
+        for document_id in document_ids:
+            await self.get_document(document_id)
+
+        tokens = {
+            str(properties["projection_token"])
+            for properties in (
+                *(entity.properties for entity in entities),
+                *(relation.properties for relation in relationships.values()),
+            )
+            if properties.get("projection_token")
+        }
+        if len(tokens) > 1 and not self.has_project_manifest:
+            raise RuntimeError("Project inventory contains mixed projection tokens; capture a stable KB")
+        await self._verify_status_unchanged()
+
+        package = {
+            "source_kind": "pega",
+            "project_id": self.project,
+            "scope": {
+                "mode": "project",
+                "seed_entity_ids": [],
+                "relationship_types": [],
+                "discovery": "complete_project_inventory",
+                "entity_count": len(entity_ids),
+                "relationship_count": len(relationships),
+                "document_count": len(document_ids),
+                "complete_for_requested_scope": True,
+            },
+            "status": self.status,
+            "schema": self.schema,
+            "entities": [self._entities[key].card() | {"properties": self._entities[key].properties} for key in sorted(entity_ids)],
+            "relationships": [
+                {
+                    "id": relation.id,
+                    "source_entity_id": relation.source_entity_id,
+                    "target_entity_id": relation.target_entity_id,
+                    "relationship_type": relation.relationship_type,
+                    "document_id": relation.document_id,
+                    "properties": relation.properties,
+                }
+                for relation in sorted(relationships.values(), key=lambda item: item.id)
+            ],
+            "documents": self.cache.manifest(),
+            "unresolved_references": [
+                {
+                    "relationship_id": relation.id,
+                    "target_entity_id": relation.target_entity_id,
+                    "resolution_outcome": relation.properties.get("resolution_outcome"),
+                    "resolution_reason": relation.properties.get("resolution_reason"),
+                }
+                for relation in sorted(relationships.values(), key=lambda item: item.id)
+                if relation.properties.get("resolution_outcome") in {"MISSING_EXPORT", "AMBIGUOUS_REFERENCE"}
+            ],
+            "requests": self._requests,
+        }
+        package["snapshot_key"] = digest(
+            stable_json({key: value for key, value in package.items() if key != "requests"})
+        )
+        return package
+
     def _check_id(self, value: str, kind: str) -> None:
         if not isinstance(value, str) or not value.startswith(f"{self.project}::"):
             raise ValueError(f"{kind} ID does not belong to project {self.project!r}: {value!r}")
 
-    def load_snapshot(self, path: Path) -> dict[str, Any]:
-        """Verify and restore one immutable evidence package from local files."""
+    def load_snapshot(
+        self, path: Path, *, verify_document_content: bool = True
+    ) -> dict[str, Any]:
+        """Restore a captured package, optionally checking current source bytes."""
         package = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(package, dict) or package.get("source_kind") != "pega":
             raise ValueError("The evidence package is not a Pega snapshot")
@@ -506,6 +730,14 @@ class PegaGraphProvider:
             raise ValueError("The saved Pega evidence package has no graph inventory")
         if scope.get("entity_count") != len(entities) or scope.get("document_count") != len(documents):
             raise ValueError("The saved Pega evidence counts disagree with its inventory")
+        if scope.get("mode") == "project":
+            status = package.get("status") or {}
+            if (
+                scope.get("relationship_count") != len(relationships)
+                or status.get("entities") != len(entities)
+                or status.get("documents") != len(documents)
+            ):
+                raise ValueError("The saved project evidence does not cover its reported inventory")
         self._selected_document_ids.clear()
         self._entities.clear()
         self._relationships.clear()
@@ -513,7 +745,9 @@ class PegaGraphProvider:
             self._check_id(document_id, "document")
             if not isinstance(manifest_entry, dict):
                 raise ValueError(f"Invalid document manifest entry for {document_id}")
-            self.cache.load_document(document_id, manifest_entry)
+            self.cache.load_document(
+                document_id, manifest_entry, verify_content=verify_document_content
+            )
             self._selected_document_ids.add(document_id)
         for row in entities:
             if not isinstance(row, dict) or not isinstance(row.get("properties"), dict):
@@ -547,6 +781,47 @@ class PegaGraphProvider:
             raise ValueError("The saved Pega evidence package has no status or graph schema")
         return package
 
+    def bind_snapshot(self, package: dict[str, Any]) -> None:
+        """Restrict all in-memory graph and document selection to one package."""
+        if package.get("source_kind") != "pega" or package.get("project_id") != self.project:
+            raise ValueError("Cannot bind provider to an incompatible Pega evidence package")
+        documents = package.get("documents")
+        entities = package.get("entities")
+        relationships = package.get("relationships")
+        if (
+            not isinstance(documents, dict)
+            or not isinstance(entities, list)
+            or not isinstance(relationships, list)
+        ):
+            raise ValueError("Cannot bind provider to an incomplete Pega evidence package")
+
+        selected_entities: dict[str, PegaEntity] = {}
+        for row in entities:
+            if not isinstance(row, dict) or not isinstance(row.get("properties"), dict):
+                raise ValueError("Invalid Pega entity in evidence package")
+            entity = PegaEntity.from_result(row["properties"], row.get("document_ids") or [])
+            if entity.id != row.get("id") or not set(entity.document_ids).issubset(documents):
+                raise ValueError(f"Pega entity {entity.id} is inconsistent with the evidence package")
+            selected_entities[entity.id] = entity
+
+        selected_relationships: dict[str, PegaRelationship] = {}
+        for row in relationships:
+            if not isinstance(row, dict):
+                raise ValueError("Invalid Pega relationship in evidence package")
+            relationship = PegaRelationship.from_result(row)
+            if (
+                relationship.id != row.get("id")
+                or relationship.source_entity_id not in selected_entities
+                or relationship.target_entity_id not in selected_entities
+                or (relationship.document_id and relationship.document_id not in documents)
+            ):
+                raise ValueError(f"Pega relationship {relationship.id} escapes the evidence package")
+            selected_relationships[relationship.id] = relationship
+
+        self._entities = selected_entities
+        self._relationships = selected_relationships
+        self._selected_document_ids = set(documents)
+
     def codewiki_components(self, package: dict[str, Any]) -> dict[str, Node]:
         """Expose a directed dependency view while retaining typed edges in the package.
 
@@ -561,8 +836,6 @@ class PegaGraphProvider:
             str(entity["id"]): entity
             for entity in package.get("entities") or []
             if entity.get("rule_type")
-            and not entity.get("is_external")
-            and not entity.get("is_embedded")
             and any(document_id in documents for document_id in entity.get("document_ids") or [])
         }
         dependencies: dict[str, set[str]] = {entity_id: set() for entity_id in eligible}
@@ -600,6 +873,51 @@ class PegaGraphProvider:
                 source_code=json.dumps(card, ensure_ascii=False),
                 display_name=str(entity["name"]),
             )
+        return components
+
+    def cached_codewiki_components(self, package: dict[str, Any]) -> dict[str, Node]:
+        """Reuse the validated compatibility projection for an identical package."""
+        cache_path = self.cache.root.parent / "codewiki-components.json"
+        adapter_fingerprint = digest(
+            inspect.getsource(PegaGraphProvider.codewiki_components)
+            + stable_json(sorted(COMPATIBILITY_DEPENDENCY_TYPES))
+        )
+        if cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if (
+                    cached.get("snapshot_key") == package.get("snapshot_key")
+                    and cached.get("adapter_fingerprint") == adapter_fingerprint
+                    and isinstance(cached.get("components"), dict)
+                ):
+                    return {
+                        component_id: Node.model_validate(record)
+                        for component_id, record in cached["components"].items()
+                    }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+
+        components = self.codewiki_components(package)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "snapshot_key": package["snapshot_key"],
+                    "adapter_fingerprint": adapter_fingerprint,
+                    "components": {
+                        component_id: component.model_dump(mode="json")
+                        for component_id, component in components.items()
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(cache_path)
         return components
 
 

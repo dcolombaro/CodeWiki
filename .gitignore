@@ -83,6 +83,7 @@ Thumbs.db
 *.log
 *.bak
 .codewiki/
+.codewiki-pega-cache/
 !tests/updater_toy.py
 !tests/test_updater_graph_diff.py
 !tests/test_updater_tree_repair.py
@@ -90,3 +91,5 @@ Thumbs.db
 !tests/test_updater_change_report.py
 !tests/test_updater_write_guard.py
 !tests/test_updater_orchestrator.py
+!tests/test_pega_project_capture.py
+!tests/test_pega_refresh.py

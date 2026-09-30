@@ -50,15 +50,15 @@ async def _resolve_seed(
 @click.option("--mcp-command", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--mcp-arg", multiple=True, help="Repeat for each server argument, e.g. --mcp-arg=-m")
 @click.option("--mcp-cwd", required=True, type=click.Path(exists=True, file_okay=False))
-@click.option("--seed-id", help="Exact project-prefixed graph entity ID")
-@click.option("--seed-name", help="Resolve one exact entity name before capturing")
+@click.option("--seed-id", help="Optional focus: exact project-prefixed graph entity ID")
+@click.option("--seed-name", help="Optional focus: resolve one exact entity name")
 @click.option("--rule-type", help="Optional rule type filter for --seed-name")
 @click.option("--class-name", help="Optional Applies-To class filter for --seed-name")
 @click.option("--ruleset", help="Optional ruleset filter for --seed-name")
 @click.option("--relationship-type", multiple=True, help="Repeat for each traversed edge type")
 @click.option("--expand-entity-id", multiple=True, help="Expand one selected branch by one further edge")
-@click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True)
-@click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True)
+@click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True, help="Focused slice only")
+@click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True, help="Focused slice only")
 @click.option("--output", required=True, type=click.Path(path_type=Path))
 def pega_snapshot_command(
     project: str,
@@ -76,27 +76,54 @@ def pega_snapshot_command(
     max_documents: int,
     output: Path,
 ) -> None:
-    """Save graph-selected official Markdown and directed evidence for one slice."""
-    if bool(seed_id) == bool(seed_name):
-        raise click.UsageError("Provide exactly one of --seed-id or --seed-name")
+    """Capture the whole Pega project, or an optional focused slice."""
+    if seed_id and seed_name:
+        raise click.UsageError("Provide at most one of --seed-id or --seed-name")
+    if not (seed_id or seed_name) and any(
+        (rule_type, class_name, ruleset, relationship_type, expand_entity_id, depth != 1, max_documents != 40)
+    ):
+        raise click.UsageError("Seed, depth, relationship, and document-limit options require --seed-id or --seed-name")
     output = output.resolve()
     if output.exists() and any(output.iterdir()):
         raise click.ClickException(f"Output directory must be empty: {output}")
 
     async def capture() -> dict:
         async with PegaMCPClient(mcp_command, list(mcp_arg), cwd=mcp_cwd) as client:
-            provider = PegaGraphProvider(client, project=project, cache_dir=output / "evidence")
+            provider = PegaGraphProvider(
+                client,
+                project=project,
+                cache_dir=output / "evidence",
+                source_root=Path(mcp_cwd),
+            )
             await provider.initialize()
-            resolved_id = await _resolve_seed(
-                provider, seed_id, seed_name, rule_type, class_name, ruleset
-            )
-            package = await provider.snapshot_slice(
-                seed_entity_id=resolved_id,
-                depth=depth,
-                relationship_types=list(relationship_type) or None,
-                expand_entity_ids=list(expand_entity_id),
-                max_documents=max_documents,
-            )
+            await provider.project_projection_tokens()
+            provider._require_ready_status()
+            initial_revision = provider.project_revision
+            if not initial_revision:
+                raise RuntimeError("Cannot determine the current PEGA project revision")
+            if seed_id or seed_name:
+                resolved_id = await _resolve_seed(
+                    provider, seed_id, seed_name, rule_type, class_name, ruleset
+                )
+                package = await provider.snapshot_slice(
+                    seed_entity_id=resolved_id,
+                    depth=depth,
+                    relationship_types=list(relationship_type) or None,
+                    expand_entity_ids=list(expand_entity_id),
+                    max_documents=max_documents,
+                )
+            else:
+                package = await provider.snapshot_project()
+            await provider._verify_status_unchanged()
+            await provider.project_projection_tokens()
+            provider._require_ready_status()
+            if provider.project_revision != initial_revision:
+                raise RuntimeError(
+                    "PEGA project revision changed during evidence capture; retry snapshot"
+                )
+            from codewiki.src.be.pega_refresh import stamp_project_revision
+
+            stamp_project_revision(package, initial_revision)
             save_evidence_package(package, output / "evidence-package.json")
             return package
 
@@ -219,20 +246,40 @@ def pega_compare_command(
 @click.option("--mcp-command", type=click.Path(exists=True, dir_okay=False))
 @click.option("--mcp-arg", multiple=True)
 @click.option("--mcp-cwd", type=click.Path(exists=True, file_okay=False))
-@click.option("--seed-id")
-@click.option("--seed-name")
+@click.option("--seed-id", help="Optional focus: exact project-prefixed graph entity ID")
+@click.option("--seed-name", help="Optional focus: resolve one exact entity name")
 @click.option("--rule-type")
 @click.option("--class-name")
 @click.option("--ruleset")
 @click.option("--relationship-type", multiple=True)
 @click.option("--expand-entity-id", multiple=True, help="Expand one selected branch by one further edge")
-@click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True)
-@click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True)
+@click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True, help="Focused slice only")
+@click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True, help="Focused slice only")
 @click.option("--model", required=True, help="Model ID on the customer approved API endpoint")
 @click.option("--cluster-model", default=None, help="Optional model for module planning")
 @click.option("--model-base-url", required=True, help="Explicit customer approved API base URL")
 @click.option("--api-key-env", required=True, help="Name of the environment variable holding the API key")
 @click.option("--plan-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Optional reviewed module plan for this exact snapshot")
+@click.option(
+    "--incremental-from",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Reuse unaffected pages from a prior PEGA wiki run",
+)
+@click.option(
+    "--bundle-evidence",
+    is_flag=True,
+    help="Copy frozen evidence files so the run can move without its snapshot",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Persistent PEGA evidence cache (default: CODEWIKI_PEGA_CACHE_DIR or a cache beside the output)",
+)
+@click.option(
+    "--replan",
+    is_flag=True,
+    help="Reuse current evidence but re-run planning and all page writers",
+)
 @click.option("--output", required=True, type=click.Path(path_type=Path))
 def pega_generate_command(
     project: str,
@@ -254,24 +301,50 @@ def pega_generate_command(
     model_base_url: str,
     api_key_env: str,
     plan_file: Path | None,
+    incremental_from: Path | None,
+    bundle_evidence: bool,
+    cache_dir: Path | None,
+    replan: bool,
     output: Path,
 ) -> None:
-    """Generate an evidence-linked CodeWiki from a frozen Pega graph slice."""
+    """Generate an evidence-linked wiki for a Pega project or focused slice."""
     if snapshot_dir is not None:
         if any((seed_id, seed_name, rule_type, class_name, ruleset, mcp_command, mcp_arg, mcp_cwd, relationship_type, expand_entity_id)):
             raise click.UsageError(
                 "--snapshot-dir cannot be combined with live MCP or seed options"
             )
-    elif bool(seed_id) == bool(seed_name) or not mcp_command or not mcp_cwd:
+    elif (seed_id and seed_name) or not mcp_command or not mcp_cwd:
         raise click.UsageError(
-            "Live generation requires --mcp-command, --mcp-cwd, and exactly one seed"
+            "Live generation requires --mcp-command and --mcp-cwd; provide at most one seed"
         )
+    if snapshot_dir is None and not (seed_id or seed_name) and any(
+        (rule_type, class_name, ruleset, relationship_type, expand_entity_id, depth != 1, max_documents != 40)
+    ):
+        raise click.UsageError("Seed, depth, relationship, and document-limit options require --seed-id or --seed-name")
+    if incremental_from is not None and plan_file is not None:
+        raise click.UsageError(
+            "--incremental-from reuses the previous run's validated module ownership; "
+            "do not combine it with --plan-file"
+        )
+    if replan and incremental_from is not None:
+        raise click.UsageError("--replan cannot be combined with --incremental-from")
     api_key = os.environ.get(api_key_env)
     if not api_key:
         raise click.ClickException(f"API key variable {api_key_env} is unset")
     if not model_base_url.startswith(("https://", "http://")):
         raise click.UsageError("--model-base-url must be an explicit HTTP(S) URL")
     output = output.resolve()
+    cache_base = Path(
+        os.environ.get("CODEWIKI_PEGA_OUTPUT_ROOT", str(output.parent))
+    ).expanduser()
+    if not cache_base.is_absolute():
+        cache_base = Path.cwd() / cache_base
+    configured_cache = cache_dir or (
+        Path(os.environ["CODEWIKI_PEGA_CACHE_DIR"])
+        if os.environ.get("CODEWIKI_PEGA_CACHE_DIR")
+        else cache_base / ".codewiki-pega-cache"
+    )
+    configured_cache = configured_cache.expanduser().resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise click.ClickException(f"Output directory must be empty: {output}")
     # The Pega run does not send diagrams to CodeWiki's default remote renderer.
@@ -281,7 +354,13 @@ def pega_generate_command(
         from codewiki.src.be.pega_documentation_generator import PegaDocumentationGenerator
         from codewiki.src.config import Config
 
-        async def write_pages(provider: PegaGraphProvider, package: dict, source_path: str) -> Path:
+        async def write_pages(
+            provider: PegaGraphProvider,
+            package: dict,
+            source_path: str,
+            evidence_refresh: dict | None = None,
+            previous_run: Path | None = None,
+        ) -> Path:
             config = Config.from_cli(
                 repo_path=source_path,
                 output_dir=str(output / "docs"),
@@ -299,7 +378,13 @@ def pega_generate_command(
             config.pega_snapshot_key = package["snapshot_key"]
             generator = PegaDocumentationGenerator(config, provider)
             planned_modules = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file else None
-            return await generator.run_pega(package, planned_modules)
+            return await generator.run_pega(
+                package,
+                planned_modules,
+                incremental_from=previous_run,
+                bundle_evidence=bundle_evidence,
+                evidence_refresh=evidence_refresh,
+            )
 
         if snapshot_dir is not None:
             captured_dir = snapshot_dir.resolve()
@@ -307,35 +392,53 @@ def pega_generate_command(
                 None, project=project, cache_dir=captured_dir / "evidence"
             )
             package = captured.load_snapshot(captured_dir / "evidence-package.json")
-            provider = PegaGraphProvider(
-                None, project=project, cache_dir=output / "evidence"
+            return await write_pages(
+                captured,
+                package,
+                str(captured_dir),
+                {"decision": "saved_evidence_replay"},
+                incremental_from,
             )
-            for document_id in package["documents"]:
-                document = captured.cache.get_document(document_id)
-                if document is None:
-                    raise ValueError(f"Missing cached official document {document_id}")
-                provider.cache.put_document(document)
-            save_evidence_package(package, output / "evidence-package.json")
-            provider.load_snapshot(output / "evidence-package.json")
-            return await write_pages(provider, package, str(captured_dir))
 
         assert mcp_command is not None and mcp_cwd is not None
+        from codewiki.src.be.pega_refresh import PegaEvidenceStore, prepare_pega_evidence, scope_request
+
+        request = scope_request(
+            seed_id=seed_id,
+            seed_name=seed_name,
+            rule_type=rule_type,
+            class_name=class_name,
+            ruleset=ruleset,
+            depth=depth,
+            relationship_types=list(relationship_type),
+            expand_entity_ids=list(expand_entity_id),
+            max_documents=max_documents,
+        )
+        evidence_store = PegaEvidenceStore(configured_cache, project)
         async with PegaMCPClient(
             mcp_command, list(mcp_arg), cwd=mcp_cwd, exclude_env={api_key_env}
         ) as client:
-            provider = PegaGraphProvider(client, project=project, cache_dir=output / "evidence")
-            await provider.initialize()
-            resolved_id = await _resolve_seed(
-                provider, seed_id, seed_name, rule_type, class_name, ruleset
+            provider, package, evidence_refresh = await prepare_pega_evidence(
+                project=project,
+                client=client,
+                source_root=Path(mcp_cwd),
+                store=evidence_store,
+                request=request,
             )
-            package = await provider.snapshot_slice(
-                seed_entity_id=resolved_id,
-                depth=depth,
-                relationship_types=list(relationship_type) or None,
-                expand_entity_ids=list(expand_entity_id),
-                max_documents=max_documents,
+            previous_run = (
+                None
+                if replan or plan_file
+                else (incremental_from or evidence_store.latest_run(request))
             )
-            return await write_pages(provider, package, mcp_cwd)
+            docs_path = await write_pages(
+                provider,
+                package,
+                mcp_cwd,
+                evidence_refresh,
+                previous_run,
+            )
+            evidence_store.record_run(request, output)
+            return docs_path
 
     try:
         docs_path = asyncio.run(generate())
@@ -366,3 +469,119 @@ def pega_viewer_command(run_dir: Path) -> None:
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Local PEGA viewer saved to {output}")
+
+
+@click.command("pega-serve")
+@click.option("--project", help="PEGA project ID; defaults to PEGA_PROJECT_ID when set")
+@click.option(
+    "--run-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Serve this run instead of locating the latest one",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Evidence cache to search; defaults to CODEWIKI_PEGA_CACHE_DIR",
+)
+@click.option(
+    "--runs-root",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Additional directory to search for older runs",
+)
+@click.option(
+    "--bind", "bind_address", default="127.0.0.1", show_default=True,
+    help="Local address for the HTTP server",
+)
+@click.option("--port", default=8766, type=click.IntRange(1, 65535), show_default=True)
+def pega_serve_command(
+    project: str | None,
+    run_dir: Path | None,
+    cache_dir: Path | None,
+    runs_root: tuple[Path, ...],
+    bind_address: str,
+    port: int,
+) -> None:
+    """Serve the latest PEGA wiki locally, without requiring its run directory."""
+    from dotenv import load_dotenv
+
+    repo_root = Path(__file__).resolve().parents[3]
+    load_dotenv(repo_root / ".env.local", override=False)
+    project = project or os.environ.get("PEGA_PROJECT_ID") or None
+    output_root = Path(os.environ.get("CODEWIKI_PEGA_OUTPUT_ROOT", "runs")).expanduser()
+    if not output_root.is_absolute():
+        output_root = repo_root / output_root
+    if cache_dir is not None:
+        configured_cache = cache_dir.expanduser()
+    elif os.environ.get("CODEWIKI_PEGA_CACHE_DIR"):
+        configured_cache = Path(os.environ["CODEWIKI_PEGA_CACHE_DIR"]).expanduser()
+        if not configured_cache.is_absolute():
+            configured_cache = repo_root / configured_cache
+    else:
+        configured_cache = output_root / ".codewiki-pega-cache"
+    if not configured_cache.is_absolute():
+        configured_cache = Path.cwd() / configured_cache
+
+    if run_dir is None:
+        from codewiki.src.be.pega_refresh import find_latest_pega_run
+
+        search_roots = [repo_root / "runs", Path.cwd() / "runs", output_root]
+        search_roots.extend(runs_root)
+        run_dir = find_latest_pega_run(
+            cache_root=configured_cache,
+            search_roots=list(dict.fromkeys(path.resolve() for path in search_roots)),
+            project_id=project,
+        )
+    if run_dir is None:
+        qualifier = f" for project {project!r}" if project else ""
+        raise click.ClickException(
+            f"No completed PEGA CodeWiki run was found{qualifier}. Run `codewiki pega-generate` first."
+        )
+    run_dir = run_dir.expanduser().resolve()
+    manifest_path = run_dir / "evidence-manifest.json"
+    required_run_files = (
+        run_dir / "evidence-package.json",
+        run_dir / "plan.json",
+        manifest_path,
+        run_dir / "docs" / "module_tree.json",
+    )
+    if not all(path.is_file() for path in required_run_files):
+        raise click.ClickException(f"Not a completed PEGA CodeWiki run: {run_dir}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"Cannot read PEGA run manifest at {manifest_path}: {exc}") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("source_kind") != "pega"
+        or (project and manifest.get("project_id") != project)
+    ):
+        raise click.ClickException(f"Run at {run_dir} does not match the requested PEGA project")
+
+    if not (run_dir / "index.html").is_file():
+        from codewiki.cli.pega_viewer import render_pega_viewer
+
+        try:
+            render_pega_viewer(run_dir)
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise click.ClickException(f"Could not build the run viewer: {exc}") from exc
+
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+    try:
+        server = ThreadingHTTPServer(
+            (bind_address, port),
+            partial(SimpleHTTPRequestHandler, directory=str(run_dir)),
+        )
+    except OSError as exc:
+        raise click.ClickException(f"Cannot serve on {bind_address}:{port}: {exc}") from exc
+    display_host = "127.0.0.1" if bind_address in {"0.0.0.0", "::"} else bind_address
+    click.echo(f"Serving PEGA CodeWiki run: {run_dir}")
+    click.echo(f"Open http://{display_host}:{port}/index.html (Ctrl-C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        click.echo("\nStopped PEGA CodeWiki viewer.")
+    finally:
+        server.server_close()

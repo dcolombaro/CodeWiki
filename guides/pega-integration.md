@@ -5,23 +5,22 @@ knowledge base through the `pega-kb-neo4j` MCP service. XML extraction, rule
 selection, semantic enrichment, graph projection, and indexing remain in the
 PEGA pipeline. CodeWiki does not parse raw XML during documentation generation.
 
-The current entry points generate **one bounded graph slice**. A whole-project
-wiki and production incremental updater are later stages. The first slice
-should include its entry rules, dispatcher, one expanded downstream strategy,
-and a reviewed module plan. Other branches can remain at the dispatcher
-boundary; links to rules shared with the selected strategy may still appear.
+The default PEGA entry point captures the **entire selected project**. It
+enumerates every graph entity and directed PEGA-to-PEGA relationship, then
+loads all official Markdown linked to those entities. A seed and depth are
+optional controls for a smaller investigation such as the CercaAgenzia PoC.
+Unattended refresh scheduling remains a separate operational choice.
 
 ## Prerequisites
 
 - Install this fork in Python 3.12 or newer and the PEGA pipeline in its own
   Python 3.11 or newer environment.
 - Restore and validate the PEGA Neo4j knowledge base with its owner-provided
-  workflow. Keep the knowledge base unchanged during one capture or generation
-  run: the MCP contract does not expose an atomic published revision for every
-  response.
+  workflow. CodeWiki reads the existing project manifest from Neo4j through
+  the PEGA MCP `read_cypher` tool, falling back to existing row projection
+  tokens for older KBs. No PEGA Agent output-contract change is required.
 - Use an explicit customer-approved, OpenAI-compatible model API base URL,
-  model ID, and API key for `pega-generate`. Snapshot, planning validation, and
-  evidence comparison do not call a CodeWiki model.
+  model ID, and API key for `pega-generate`.
 - Use a new, empty output directory for each run.
 
 Install the fork with `python -m pip install -e .` in a Python 3.12+
@@ -37,54 +36,58 @@ Keep project IDs, graph IDs, credentials, and saved evidence outside versioned
 files when the CodeWiki fork is public. The `runs/` directory and `.env.local`
 are Git-ignored.
 
-## Capture official evidence
+## Manual evidence snapshot for inspection or replay
 
-Set the project and PEGA bundle paths in your shell, then select an exact graph
-entity ID for the entry rule. Use `search_entities` through the PEGA MCP service
-if the ID is not known; `pega-snapshot` also supports `--seed-name` plus rule,
-class, and ruleset filters when that combination resolves uniquely.
+Normal documentation generation does not require a separate snapshot command.
+`pega-generate` checks the current project revision, reuses a matching cached
+package, or captures the requested scope when the cache is stale or incomplete.
+Use `pega-snapshot` only when you specifically want to inspect, archive, or
+replay an evidence package independently of generation.
+
+Set the project and PEGA Agent repository paths in your shell. The project ID
+comes from that repository's `projects/projects.yaml`; no seed or depth is
+needed for complete project capture.
 
 ```bash
 export PEGA_PROJECT_ID='project-id-from-projects-yaml'
 export PEGA_KB_ROOT='/absolute/path/to/pega-kb'
 export PEGA_PYTHON="$PEGA_KB_ROOT/.venv/bin/python"
-export PEGA_SEED_ID='project-prefixed-graph-entity-id'
 
 codewiki pega-snapshot \
   --project "$PEGA_PROJECT_ID" \
   --mcp-command "$PEGA_PYTHON" \
   --mcp-arg=-m --mcp-arg=pega_kb.neo4j_mcp \
   --mcp-cwd "$PEGA_KB_ROOT" \
-  --seed-id "$PEGA_SEED_ID" \
-  --depth 1 \
-  --relationship-type SERVICE_INVOKES_ACTIVITY \
-  --relationship-type CALLS_ACTIVITY \
-  --relationship-type RUNS_DATA_TRANSFORM \
-  --relationship-type EVALUATES_DECISION_TABLE \
-  --relationship-type USES_DATA_PAGE \
   --output runs/pega-evidence
 ```
 
-Use `--expand-entity-id` to extend one entity already selected by the seed
-scope by one more edge. Repeat it for multiple selected branches. The named
-relationship types control traversal; all typed edges between captured
-entities remain in the evidence package. Check the live schema before choosing
-types, and narrow the scope if the default 40-document limit is exceeded.
+For a focused slice, add `--seed-id ID` or `--seed-name NAME` and `--depth N`.
+The optional `--relationship-type` values control which edges expand that
+slice; all typed edges between captured entities remain in its evidence
+package. `--expand-entity-id` extends a selected branch by one hop. The
+40-document default limit applies only to focused slices.
 
-The command checks `list_projects`, `kb_status`, and `describe_graph`, then
-saves `evidence-package.json` and exact official Markdown returned by the
-graph-selected document IDs. It preserves relationship ID, direction,
-qualifiers, source locators, resolution outcomes, and local document hashes.
-The `snapshot_key` is an adapter fingerprint of this capture, not an atomic
-Neo4j revision. A documented rule becomes a CodeWiki `Node` compatibility
-record; its selected behavioral `depends_on` links do not replace the typed
-relationship evidence.
+The project command checks `list_projects`, `kb_status`, and `describe_graph`,
+paginates the full entity inventory through `search_entities`, and enumerates
+directed domain edges with a fixed project-scoped `read_cypher` query ordered
+by relationship ID. It checks the entity, relationship, and linked-document
+counts before marking the package complete. It then saves
+`evidence-package.json` and the official Markdown selected by the graph. The
+package preserves edge ID, direction, qualifiers, source locators, resolution
+outcomes, and local document hashes.
+The project manifest hash (or fallback row-token revision) identifies the
+current PEGA graph revision. The `snapshot_key` fingerprints the selected
+evidence package. A
+documented rule becomes a CodeWiki `Node` compatibility record; its selected
+behavioral `depends_on` links do not replace the typed relationship evidence.
 
 ## Validate a module plan
 
 Write a JSON plan using the exact `snapshot_key` and documented entity IDs in
-the captured package. Give every documented rule one primary module. External
-references and embedded entities are supporting context, not module owners.
+the captured package. Give every documented rule one primary module. An entity
+without a PEGA rule type or selected official Markdown remains supporting
+context. External or embedded rules with their own selected Markdown can own a
+module page.
 A small plan has this shape:
 
 ```json
@@ -116,9 +119,10 @@ codewiki pega-plan \
 `pega-plan` verifies the snapshot key, cached Markdown hashes, graph references,
 and exact rule ownership without contacting Neo4j or a model. It writes
 `components.json`, `module_tree.json`, `validation.json`, and a reusable
-`plan.json`. Its coverage count applies only to the captured slice. If a
-reviewed plan is not available, `pega-generate` can ask the configured model to
-propose one and applies the same ownership validation.
+`plan.json`. Its coverage count applies to the scope recorded in the package.
+If a reviewed plan is unavailable, `pega-generate` plans a complete project in
+bounded class-local batches and validates one primary owner for every
+documented rule. The CercaAgenzia slice keeps its small-scope planner.
 
 ## Configure the model and generate pages
 
@@ -136,25 +140,32 @@ CUSTOMER_MODEL_API_KEY='customer-provided-secret'
 CUSTOMER_MODEL_BASE_URL='https://customer-approved-provider.example/v1'
 CUSTOMER_MODEL_ID='customer-approved-model-id'
 PEGA_PROJECT_ID='project-id-from-projects-yaml'
-PEGA_SNAPSHOT_DIR='runs/pega-evidence'
-PEGA_PLAN_FILE='runs/pega-plan/plan.json'
-# For live generation only:
+# Optional reviewed plan for the exact current evidence package.
+PEGA_PLAN_FILE=''
+# Required for the automatic revision check and evidence refresh:
 PEGA_KB_ROOT='/absolute/path/to/pega-kb'
 PEGA_PYTHON='/absolute/path/to/pega-kb/.venv/bin/python'
-PEGA_SEED_ID='project-prefixed-graph-entity-id'
+# Optional persistent cache location; defaults below the output root.
+CODEWIKI_PEGA_CACHE_DIR='runs/.codewiki-pega-cache'
+# Optional focused request; leave the seed empty for the whole project.
+# PEGA_SEED_ID='project-prefixed-graph-entity-id'
 ```
 
-The generic helper replays the verified snapshot, uses the reviewed plan when
-`PEGA_PLAN_FILE` is set, and writes a fresh wiki run:
+The helper checks the live revision, uses the reviewed plan when
+`PEGA_PLAN_FILE` is set, and writes a new wiki run:
 
 ```bash
 scripts/pega_wiki_demo.sh
 # Or: scripts/pega_wiki_demo.sh /path/to/new-run
 ```
 
-Frozen replay offers only captured evidence; its live retrieval specialist is
-disabled. For live retrieval and the bounded specialist, load `.env.local` into
-the shell and use the CLI with the same approved model settings:
+Every run generates only from one verified evidence package. The automatic
+CLI workflow reads the live project manifest hash (or row-token fallback)
+first. If the cached package matches, it skips graph/document capture and
+reuses the cached component view; if not, it captures the requested project
+or slice and checks the revision again before saving it. A complete cached
+project package can also supply a focused slice locally. CodeWiki then
+disconnects the MCP transport before planning and writing. To run it directly:
 
 ```bash
 set -a
@@ -165,62 +176,107 @@ codewiki pega-generate \
   --mcp-command "$PEGA_PYTHON" \
   --mcp-arg=-m --mcp-arg=pega_kb.neo4j_mcp \
   --mcp-cwd "$PEGA_KB_ROOT" \
-  --seed-id "$PEGA_SEED_ID" \
-  --depth 1 \
   --model "$CUSTOMER_MODEL_ID" \
   --model-base-url "$CUSTOMER_MODEL_BASE_URL" \
   --api-key-env CUSTOMER_MODEL_API_KEY \
   --output runs/pega-wiki-live
 ```
 
-Repeat the relationship and branch expansion options used for the reviewed
-snapshot when they are relevant. Pass `--plan-file` only if its `snapshot_key`
-exactly matches the new capture. The model key is removed from the PEGA MCP
+Add seed, depth, relationship, and branch expansion options only for a focused
+slice. Matching previous wiki pages are reused automatically. Use `--replan`
+to reuse the package while rerunning planning and every writer. `--snapshot-dir`
+remains an explicit offline replay option for diagnostics and reproducibility.
+The model key is removed from the PEGA MCP
 subprocess environment. Both root and recursive CodeWiki writers use the PEGA
 evidence tools; official source reads go through the bounded evidence reader,
-not the XML export or the generic repository editor. The specialist can search, inspect, traverse, and read selected
-Markdown under a bounded retrieval budget.
+not the XML export or the generic repository editor. During generation, the
+specialist can search, inspect, traverse, and read package-selected Markdown
+under a bounded retrieval budget; it cannot enlarge the captured graph or
+document set.
 
 A successful run writes module pages, `overview.md`, the module tree, the plan,
-official document copies, directed relationship receipts, and a manifest with
-source, model, prompt, timing, and available usage metadata. Each module page
+directed relationship receipts, and a manifest with source, model, prompt,
+timing, and available usage metadata. `evidence/` holds links to the original
+PEGA Agent Markdown plus small JSON metadata records. A fresh capture reads
+each selected file through MCP and compares its content hash with the local
+source before linking it; subsequent matching runs reuse those hashes and
+links. The shared evidence cache and generated runs keep links and metadata
+rather than Markdown copies. Each module page
 receives a deterministic inventory of its owned rules and outgoing edges. The
-manifest records evidence section reads and their returned hashes. The writer
-checks rule ownership, required pages, local citations, and local links.
+manifest records evidence storage mode, evidence section reads, and returned
+hashes. The writer checks rule ownership, required pages, local citations, and
+local links.
 CodeWiki's remote Mermaid renderer is disabled for this route; diagram source
 remains in Markdown. The command also writes `index.html` at the run root. This
-local viewer renders the module pages, official document copies, and directed
+local viewer renders the module pages, official documents, and directed
 relationship receipts as a navigable wiki. It bundles the rendered content in
 the HTML file and copies a pinned Mermaid browser bundle into `assets/` to render
-diagrams locally. It makes no CDN or rendering-service requests. The viewer
-contains the captured evidence and stays in the Git-ignored `runs/` directory.
+diagrams locally. Official Markdown is fetched from `evidence/` only when its
+viewer page is opened, then checked against the captured hash. The viewer makes
+no CDN or rendering-service requests. To inspect a run's linked `evidence/`
+files, keep the shared cache and PEGA Agent source tree available at their
+recorded paths. Pass `--bundle-evidence` when the run must move independently
+of the cache and source tree; that option intentionally copies selected
+Markdown and metadata into the run.
 
-To view an existing run, build or refresh its viewer without another model call:
+To serve the latest run for `PEGA_PROJECT_ID`, without looking up its run
+directory:
 
 ```bash
-codewiki pega-viewer --run-dir runs/pega-wiki-live
-cd runs/pega-wiki-live
-python -m http.server 8765 --bind 127.0.0.1
+codewiki pega-serve
 ```
 
-Open `http://127.0.0.1:8765/index.html`. The viewer also opens directly as a
-local file because it does not fetch Markdown at runtime; keep its `assets/`
-directory beside `index.html`. Use a different port if 8765 is occupied. Stop
-the server with Ctrl-C.
+It prints the URL and serves the latest completed run on port 8766. Use
+`--port 8767` if 8766 is occupied. To serve a specific earlier run, pass
+`--run-dir PATH`. Keep the PEGA Agent source tree available for linked Markdown.
+Stop the server with Ctrl-C.
 
 ## Review and refresh
 
-Before generation, choose a fixed small set of questions for the selected
-slice. Good questions cover entry variants and methods, request validation,
+Before generation, choose review questions for the intended scope. For an
+agency lookup slice, good questions cover entry variants and methods, request validation,
 branch conditions, response and error mapping, one downstream data-page route,
 and a real unresolved reference. Compare each answer with its official Markdown
 or directed edge receipt. Review a sample of substantive claims for support,
 inference, contradiction, or missing evidence. Check that the overview links
 modules and that every documented rule has one primary owner.
 
-For a refresh, capture the **same** seed, depth, relationship types, and branch
-expansions after a controlled upstream knowledge change. Regenerate into a new
-empty directory, then compare both evidence packages:
+For a whole-project or focused refresh, run the same `pega-generate` command
+and scope again. CodeWiki checks the current project revision, refreshes
+evidence only when required, and finds the prior wiki for that exact scope
+automatically. Generate into a new empty directory:
+
+```bash
+codewiki pega-generate \
+  --project "$PEGA_PROJECT_ID" \
+  --mcp-command "$PEGA_PYTHON" \
+  --mcp-arg=-m --mcp-arg=pega_kb.neo4j_mcp \
+  --mcp-cwd "$PEGA_KB_ROOT" \
+  --model "$CUSTOMER_MODEL_ID" \
+  --model-base-url "$CUSTOMER_MODEL_BASE_URL" \
+  --api-key-env CUSTOMER_MODEL_API_KEY \
+  --output runs/pega-wiki-refreshed
+```
+
+The refresh compares graph entities, typed relationships, document hashes and
+document metadata when the revision check requires a new capture. With the
+same captured selection, documented rules,
+validated ownership, writer implementation, prompt, and model settings, it
+reuses unaffected module pages, regenerates affected top-level modules and
+their nested pages, and rebuilds the overview. The new run links its Markdown
+evidence to the new snapshot. It falls back to a full generation if scope,
+documented rule ownership, prompt, implementation, or model settings changed,
+or if the evidence diff cannot be routed to existing modules. The result
+records the comparison, reused pages, regenerated modules, and fallback reason
+in `evidence-manifest.json`.
+Runs generated by an earlier writer implementation fail the implementation
+identity check and trigger a one-time full generation; later refreshes can
+reuse pages from that regenerated baseline.
+
+The evidence cache lives under `CODEWIKI_PEGA_CACHE_DIR` (default
+`runs/.codewiki-pega-cache`). Use `--replan` to reuse the current package but
+rerun planning and all writers; the chat tool accepts `replan=true`. To inspect
+a change report separately, capture evidence manually and then:
 
 ```bash
 codewiki pega-compare \
@@ -236,7 +292,6 @@ edges and qualifiers, and existing module owners affected. It labels a
 changed selection as `scope_change`; the same selection is
 `evidence_refresh`. Older snapshots without metadata hashes still compare
 Markdown hashes and manifest fields; the report records metadata-hash coverage.
-A diff is evidence bookkeeping, so review the regenerated
-pages and citations to establish that the wiki reflects the change. This is a
-full-slice refresh, not a production incremental updater. Upstream corpus
-verification is a separate gate from retrieval readiness of a restored dump.
+A diff is evidence bookkeeping, so review the regenerated pages and citations
+to establish that the wiki reflects the change. Upstream corpus verification
+is a separate gate from retrieval readiness of a restored dump.

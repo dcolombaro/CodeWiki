@@ -1,11 +1,11 @@
 # MCP / IDE-driven mode
 
-CodeWiki can run as a **Model Context Protocol (MCP) server**. In this mode
-you do not configure any LLM. Your AI IDE (Cursor, Claude Desktop,
-CodeBuddy, Claude Code, or any MCP-capable client) supplies the reasoning,
-and CodeWiki supplies the toolchain: dependency analysis, code reading,
-module-tree bookkeeping, prompt templates, and a Mermaid-validating document
-writer.
+CodeWiki can run as a **Model Context Protocol (MCP) server**. Its general
+source-code tools need no model configuration: your AI IDE (Cursor, Claude
+Desktop, CodeBuddy, Claude Code, or another MCP client) supplies the
+reasoning, while CodeWiki supplies dependency analysis, code reading,
+module-tree bookkeeping, prompt templates, and a document writer. The PEGA
+generation tool added by this fork calls the configured model endpoint.
 
 Use this mode when you already pay for an IDE agent and want documentation
 without a second API key, or when you want to steer clustering and writing
@@ -53,9 +53,74 @@ A ready-made skill for Claude-based agents is in
 [`skills/codewiki-wiki-generator/SKILL.md`](../skills/codewiki-wiki-generator/SKILL.md).
 It tells the agent the workflow below.
 
+## PEGA documentation with this fork
+
+The generic setup above describes upstream CodeWiki. This fork adds
+`generate_pega_docs` to the MCP tool list. The original tools
+`analyze_repo` and `generate_docs` document source-code repositories; they do
+not query the PEGA knowledge graph. The PEGA tool uses the PEGA Agent's
+`pega-kb-neo4j` MCP service and the configured GPT-compatible model endpoint.
+
+Set the model, project, PEGA Agent repository, and PEGA Python environment in
+the fork's Git-ignored `.env.local`. See
+[`.env.local.example`](../.env.local.example). Start the server through the
+fork wrapper so it loads those values and places the fork before any upstream
+CodeWiki installation on `PYTHONPATH`:
+
+```json
+{
+  "mcpServers": {
+    "codewiki-pega": {
+      "command": "/home/USER/projects/Genertel/codewiki-pega/scripts/pega_codewiki_mcp.sh",
+      "args": []
+    }
+  }
+}
+```
+
+Replace the path with the checkout location. In the chat, ask for the whole
+project:
+
+```text
+Generate the documentation for the UnipolLead PEGA project.
+```
+
+With no seed, `generate_pega_docs` targets the complete configured project.
+For a focused request, name one exact PEGA rule, for example:
+
+```text
+Document the CercaAgenzia activity and its connected workflow to depth 2.
+```
+
+The chat agent passes `seed_name` and `depth=2`. On every invocation, CodeWiki
+checks the live project manifest through Neo4j (or existing row projection
+tokens for older KBs). If the exact scope and revision are cached, it reuses
+the evidence package and precomputed CodeWiki component view. If a complete project package is cached,
+a focused slice can be derived locally. Otherwise CodeWiki resolves the seed,
+captures the requested graph scope and retrieves its selected Markdown, then
+checks the project revision again before saving the package. The package is
+then fixed for planning and writing. Matching prior pages are reused
+automatically; pass `replan=true` to rerun planning and every page
+writer against the cached evidence. The tool returns the output directory,
+viewer path, and whether evidence was reused, derived, or recaptured.
+`depth`, `relationship_types`, `expand_entity_ids`, and `max_documents` apply
+only to a focused seed. With the default scope, the complete project is used.
+
+This wrapper starts a local stdio MCP server for clients such as Cursor or
+Claude Desktop. ChatGPT web does not connect directly to local stdio servers;
+it requires a remote MCP endpoint. To use this tool from ChatGPT, expose the
+server through an approved secure MCP tunnel or remote MCP deployment. See
+[OpenAI's ChatGPT MCP connection requirements](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
+OpenAI currently documents write-capable custom MCP apps as a beta for
+Business, Enterprise, and Edu workspaces; Pro access is limited to read/fetch
+actions. Workspace admin settings also control whether a custom app can be
+created and used.
+
 ## The tools
 
-Eight fine-grained tools, none of which calls an LLM, plus two legacy tools.
+Eight general-purpose fine-grained tools do not call an LLM. The PEGA
+generation tool calls the configured model. Two legacy tools are also
+available.
 
 | Tool | What it does |
 | --- | --- |
@@ -67,6 +132,7 @@ Eight fine-grained tools, none of which calls an LLM, plus two legacy tools.
 | `write_doc_file` | Create a Markdown page. Mermaid diagrams are validated before the write |
 | `edit_doc_file` | `str_replace`, `insert`, or `undo` on an existing page, with per-file edit history |
 | `close_session` | Write `metadata.json`, delete the workspace, free memory |
+| `generate_pega_docs` (fork only) | Capture the whole PEGA project or an exact seeded slice through the PEGA Agent MCP, then generate an evidence-linked wiki with the configured model |
 | `generate_docs` (legacy) | One-shot generation through CodeWiki's own agents. Needs `codewiki config set` |
 | `get_module_tree` (legacy) | Read an existing `module_tree.json` |
 

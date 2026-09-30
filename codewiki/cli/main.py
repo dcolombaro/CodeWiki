@@ -12,6 +12,7 @@ from codewiki.cli.commands.pega import (
     pega_compare_command,
     pega_generate_command,
     pega_plan_command,
+    pega_serve_command,
     pega_snapshot_command,
     pega_viewer_command,
 )
@@ -55,6 +56,7 @@ cli.add_command(pega_plan_command)
 cli.add_command(pega_compare_command)
 cli.add_command(pega_generate_command)
 cli.add_command(pega_viewer_command)
+cli.add_command(pega_serve_command)
 
 
 @cli.command(name="mcp")

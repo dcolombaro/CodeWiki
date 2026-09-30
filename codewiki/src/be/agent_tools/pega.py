@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext, Tool
@@ -140,15 +141,36 @@ async def specialist_search(
     class_name: str | None = None,
     ruleset: str | None = None,
 ) -> str:
-    """Resolve entity identity by name and optional rule type, class and ruleset."""
+    """Resolve entity identity inside the captured evidence package."""
     if not ctx.deps.spend():
         return '{"partial":true,"reason":"retrieval budget exhausted"}'
-    matches = await ctx.deps.provider.search_entities(
-        query,
-        rule_types=[rule_type] if rule_type else None,
-        class_names=[class_name] if class_name else None,
-        rulesets=[ruleset] if ruleset else None,
-    )
+    normalized_query = " ".join(query.casefold().split())
+    query_terms = normalized_query.split()
+    matches = []
+    for entity in ctx.deps.provider._entities.values():
+        searchable = " ".join(
+            (
+                entity.id,
+                entity.name,
+                entity.entity_type,
+                entity.rule_type,
+                entity.rule_category,
+                entity.class_name,
+                entity.ruleset,
+            )
+        ).casefold()
+        if normalized_query and normalized_query not in searchable and not all(
+            term in searchable for term in query_terms
+        ):
+            continue
+        if rule_type and entity.rule_type.casefold() != rule_type.casefold():
+            continue
+        if class_name and entity.class_name.casefold() != class_name.casefold():
+            continue
+        if ruleset and entity.ruleset.casefold() != ruleset.casefold():
+            continue
+        matches.append(entity)
+    matches.sort(key=lambda item: (item.name.casefold(), item.id))
     if len(matches) > 20:
         ctx.deps.partial = True
     return json.dumps(
@@ -158,10 +180,14 @@ async def specialist_search(
 
 
 async def specialist_inspect(ctx: RunContext[SpecialistDeps], entity_id: str) -> str:
-    """Inspect one exact graph entity and its directed relationships."""
+    """Inspect one exact entity and its directed relationships in the captured package."""
     if not ctx.deps.spend():
         return '{"partial":true,"reason":"retrieval budget exhausted"}'
-    entity = await ctx.deps.provider.get_entity(entity_id)
+    entity = ctx.deps.provider._entities.get(entity_id)
+    if entity is None:
+        return json.dumps(
+            {"error": "entity_not_in_captured_evidence_package", "entity_id": entity_id}
+        )
     edges = [
         {
             "id": edge.id,
@@ -188,23 +214,73 @@ async def specialist_traverse(
     relationship_types: list[str] | None = None,
     depth: int = 1,
 ) -> str:
-    """Follow a bounded graph route from resolved entity IDs."""
+    """Follow a bounded route using only relationships in the captured package."""
     if not ctx.deps.spend():
         return '{"partial":true,"reason":"retrieval budget exhausted"}'
-    paths = await ctx.deps.provider.traverse(
-        entity_ids, depth=depth, relationship_types=relationship_types
-    )
-    if len(paths) > 40:
+    provider = ctx.deps.provider
+    if not entity_ids or len(entity_ids) > 50 or not 1 <= depth <= 8:
+        return json.dumps({"error": "invalid_bounded_traversal_parameters"})
+    if any(entity_id not in provider._entities for entity_id in entity_ids):
+        return json.dumps({"error": "seed_entity_not_in_captured_evidence_package"})
+    selected_types = set(relationship_types or [])
+    adjacency: dict[str, list[tuple[str, Any]]] = {}
+    for edge in provider._relationships.values():
+        if selected_types and edge.relationship_type not in selected_types:
+            continue
+        adjacency.setdefault(edge.source_entity_id, []).append((edge.target_entity_id, edge))
+        adjacency.setdefault(edge.target_entity_id, []).append((edge.source_entity_id, edge))
+    for links in adjacency.values():
+        links.sort(key=lambda item: (item[1].id, item[0]))
+
+    paths: list[dict[str, Any]] = []
+    frontier = [(seed, (seed,), (), ()) for seed in sorted(set(entity_ids))]
+    truncated = False
+    for distance in range(1, depth + 1):
+        next_frontier = []
+        for current, entity_path, relation_path, document_path in frontier:
+            for neighbor, edge in adjacency.get(current, []):
+                if neighbor in entity_path:
+                    continue
+                edge_documents = (edge.document_id,) if edge.document_id else ()
+                next_path_documents = tuple(dict.fromkeys((*document_path, *edge_documents)))
+                path = {
+                    "path_entity_ids": [*entity_path, neighbor],
+                    "path_relationship_ids": [*relation_path, edge.id],
+                    "path_document_ids": list(next_path_documents),
+                    "distance": distance,
+                }
+                if len(paths) < 500:
+                    paths.append(path)
+                    next_frontier.append(
+                        (
+                            neighbor,
+                            (*entity_path, neighbor),
+                            (*relation_path, edge.id),
+                            next_path_documents,
+                        )
+                    )
+                else:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated or not next_frontier:
+            break
+        frontier = next_frontier
+    if len(paths) > 40 or truncated:
         ctx.deps.partial = True
     compact = [
         {
             "path_entity_ids": path.get("path_entity_ids"),
+            "path_relationship_ids": path.get("path_relationship_ids"),
             "path_document_ids": path.get("path_document_ids"),
             "distance": path.get("distance"),
         }
         for path in paths[:40]
     ]
-    return json.dumps({"count": len(paths), "paths": compact, "truncated": len(paths) > 40})
+    return json.dumps(
+        {"count": len(paths), "paths": compact, "truncated": len(paths) > 40 or truncated}
+    )
 
 
 async def specialist_document(
@@ -214,9 +290,13 @@ async def specialist_document(
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
-    """Read a selected official Markdown section or list its headings."""
+    """Read a Markdown document selected into the captured evidence package."""
     if not ctx.deps.spend():
         return '{"partial":true,"reason":"retrieval budget exhausted"}'
+    if document_id not in ctx.deps.provider._selected_document_ids:
+        return json.dumps(
+            {"error": "document_not_selected_by_captured_evidence_package", "document_id": document_id}
+        )
     if ctx.deps.provider.cache.get_document(document_id) is None:
         await ctx.deps.provider.get_document(document_id)
     rendered = _render_document(ctx.deps.provider, document_id, section, start_line, end_line)
@@ -281,6 +361,7 @@ async def retrieve_pega_context(ctx: RunContext[CodeWikiDeps], question: str) ->
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "usage": usage_to_dict(usage),
             "partial": specialist_deps.partial,
+            "retrieval_scope": "captured_evidence_package",
         }
     )
     answer = result.output

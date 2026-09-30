@@ -1,4 +1,4 @@
-"""Compare verified Pega evidence packages for full-slice refresh review."""
+"""Compare verified Pega evidence packages and identify affected modules."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def _scope_selection(package: dict[str, Any]) -> dict[str, Any]:
     return {
         key: scope.get(key)
         for key in (
-            "seed_entity_ids", "depth", "relationship_types",
+            "mode", "seed_entity_ids", "depth", "relationship_types",
             "expanded_entity_ids", "expansion_depth", "discovery",
         )
     }

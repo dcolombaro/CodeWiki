@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import posixpath
@@ -12,6 +13,8 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 from markdown_it import MarkdownIt
+
+from codewiki.src.be.sources.evidence import stable_json
 
 
 def _page_key(run_dir: Path, path: Path) -> str:
@@ -97,23 +100,39 @@ def _render_page(
     return {"title": title, "html": rendered, "headings": headings}
 
 
-def _navigation(module_tree: dict, pages: dict[str, dict[str, object]]) -> str:
+def _navigation(
+    module_tree: dict,
+    pages: dict[str, dict[str, object]],
+    source_pages: dict[str, dict[str, str]],
+) -> str:
     module_links = [
         '<a class="nav-link" href="' + _route("docs/overview.md") + '">Overview</a>'
     ]
-    for module in module_tree:
-        key = f"docs/{module}.md"
-        if key in pages:
-            module_links.append(
-                '<a class="nav-link" href="'
-                + _route(key)
-                + '">'
-                + html.escape(module.replace("_", " "))
-                + "</a>"
-            )
+    def add_modules(tree: dict, depth: int = 0) -> None:
+        for module, info in tree.items():
+            key = f"docs/{module}.md"
+            if key in pages:
+                module_links.append(
+                    '<a class="nav-link" style="padding-left:'
+                    + str(12 + depth * 14)
+                    + 'px" href="'
+                    + _route(key)
+                    + '">'
+                    + html.escape(module.replace("_", " "))
+                    + "</a>"
+                )
+            if isinstance(info, dict) and isinstance(info.get("children"), dict):
+                add_modules(info["children"], depth + 1)
+
+    add_modules(module_tree)
 
     source_links = []
     edge_links = []
+    for key, page in source_pages.items():
+        label = html.escape(page["title"])
+        source_links.append(
+            '<a class="nav-link" href="' + _route(key) + '" title="' + label + '">' + label + "</a>"
+        )
     for key, page in pages.items():
         if not key.startswith("evidence/"):
             continue
@@ -145,11 +164,63 @@ def render_pega_viewer(run_dir: Path) -> Path:
     if not overview.is_file() or not module_tree_path.is_file():
         raise ValueError("Run must contain docs/overview.md and docs/module_tree.json")
 
-    paths = sorted(docs_dir.glob("*.md"))
+    evidence_manifest_path = run_dir / "evidence-manifest.json"
+    if evidence_manifest_path.is_file():
+        evidence_manifest = json.loads(evidence_manifest_path.read_text(encoding="utf-8"))
+        for document_id, record in (evidence_manifest.get("documents") or {}).items():
+            cache_path = record.get("cache_path") if isinstance(record, dict) else None
+            if not isinstance(cache_path, str) or not cache_path.startswith("evidence/"):
+                raise ValueError(f"Invalid cached evidence path for {document_id}")
+            source_link = run_dir / cache_path
+            try:
+                Path(os.path.abspath(source_link)).relative_to(
+                    Path(os.path.abspath(run_dir / "evidence"))
+                )
+            except ValueError as exc:
+                raise ValueError(f"Evidence path escapes run for {document_id}") from exc
+            source_path = source_link.resolve()
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Missing official Markdown for {document_id}: {source_path}")
+            actual_hash = hashlib.sha256(
+                source_path.read_text(encoding="utf-8").encode("utf-8")
+            ).hexdigest()
+            if actual_hash != record.get("sha256"):
+                raise ValueError(f"Official Markdown changed since capture: {document_id}")
+            metadata_path = source_path.with_suffix(".json")
+            if metadata_path.is_file() and record.get("metadata_sha256"):
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if hashlib.sha256(stable_json(metadata).encode("utf-8")).hexdigest() != record["metadata_sha256"]:
+                    raise ValueError(f"Official document metadata changed since capture: {document_id}")
+
+    docs_paths = sorted(docs_dir.glob("*.md"))
     evidence_dir = run_dir / "evidence"
+    evidence_paths: list[Path] = []
     if evidence_dir.is_dir():
-        paths.extend(sorted(evidence_dir.rglob("*.md")))
-    available = {_page_key(run_dir, path) for path in paths}
+        evidence_paths = sorted(evidence_dir.rglob("*.md"))
+    source_records = {
+        record.get("cache_path"): record
+        for record in (evidence_manifest.get("documents") or {}).values()
+        if isinstance(record, dict)
+    } if evidence_manifest_path.is_file() else {}
+    source_paths = [path for path in evidence_paths if "edges" not in path.relative_to(evidence_dir).parts]
+    edge_paths = [path for path in evidence_paths if "edges" in path.relative_to(evidence_dir).parts]
+    source_pages: dict[str, dict[str, str]] = {}
+    for path in source_paths:
+        key = _page_key(run_dir, path)
+        sidecar = path.with_suffix(".json")
+        metadata = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.is_file() else {}
+        record = source_records.get(key)
+        source_hash = record.get("sha256") if record else None
+        if not source_hash:
+            source_hash = hashlib.sha256(
+                path.read_text(encoding="utf-8").encode("utf-8")
+            ).hexdigest()
+        source_pages[key] = {
+            "title": str(metadata.get("title") or path.stem),
+            "sha256": str(source_hash),
+        }
+    paths = docs_paths + edge_paths
+    available = {_page_key(run_dir, path) for path in docs_paths + evidence_paths}
 
     parser = MarkdownIt("commonmark", {"html": False, "linkify": False})
     parser.enable("table")
@@ -168,11 +239,13 @@ def render_pega_viewer(run_dir: Path) -> Path:
     metadata_path = docs_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
     project = metadata.get("generation_info", {}).get("pega_project_id") or "PEGA"
-    scope_note = "This wiki covers a selected PEGA graph slice, not the entire project knowledge base."
+    scope_note = "This wiki covers a selected PEGA graph slice."
     package_path = run_dir / "evidence-package.json"
     if package_path.is_file():
         package = json.loads(package_path.read_text(encoding="utf-8"))
         scope = package.get("scope", {})
+        if scope.get("mode") == "project":
+            scope_note = "This wiki covers the captured PEGA project knowledge base."
         scope_note += (
             f" Captured scope: {scope.get('document_count', 0)} official documents, "
             f"{scope.get('entity_count', 0)} graph entities, "
@@ -186,8 +259,9 @@ def render_pega_viewer(run_dir: Path) -> Path:
         template.replace("{{TITLE}}", html.escape(f"{project} | PEGA CodeWiki"))
         .replace("{{PROJECT}}", html.escape(project))
         .replace("{{SCOPE_NOTE}}", html.escape(scope_note))
-        .replace("{{NAVIGATION}}", _navigation(module_tree, pages))
+        .replace("{{NAVIGATION}}", _navigation(module_tree, pages, source_pages))
         .replace("{{PAGES_JSON}}", pages_json)
+        .replace("{{SOURCES_JSON}}", json.dumps(source_pages, ensure_ascii=False).replace("<", "\\u003c"))
     )
     vendor_dir = template_path.parent / "vendor"
     asset_dir = run_dir / "assets"

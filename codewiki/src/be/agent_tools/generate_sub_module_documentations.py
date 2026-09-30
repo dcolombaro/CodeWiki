@@ -83,9 +83,7 @@ async def generate_sub_module_documentation(
             complex_module=complex_module,
             custom_instructions=deps.custom_instructions,
             delegation_tool=generate_sub_module_documentation_tool,
-            pega_specialist_enabled=(
-                deps.pega_provider is not None and deps.pega_provider.transport is not None
-            ),
+            pega_specialist_enabled=deps.pega_provider is not None,
         )
         sub_agent = Agent(
             model=fallback_models,

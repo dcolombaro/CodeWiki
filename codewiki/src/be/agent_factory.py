@@ -28,11 +28,11 @@ def module_agent_spec(
 ) -> tuple[str, list[Any]]:
     if source_kind == "pega":
         specialist_instruction = (
-            "Use retrieve_pega_context only for an unresolved identity or a cross-rule "
-            "question that requires additional graph discovery."
+            "Use retrieve_pega_context only for an unresolved identity or cross-rule question "
+            "within the captured evidence package. Its searches and traversals cannot expand "
+            "the captured graph or document set."
             if pega_specialist_enabled
-            else "This frozen replay has no live retrieval specialist. Use only the captured "
-            "graph and official Markdown; mark unresolved questions as limits."
+            else "Use only the captured graph and official Markdown; mark unresolved questions as limits."
         )
         prompt = PEGA_WRITER_PROMPT.format(
             module_name=module_name,

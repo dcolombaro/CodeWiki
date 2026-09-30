@@ -135,9 +135,7 @@ class PydanticAIBackend(LLMBackend):
             complex_module=complex_module,
             custom_instructions=self._custom_instructions,
             delegation_tool=generate_sub_module_documentation_tool,
-            pega_specialist_enabled=(
-                self.pega_provider is not None and self.pega_provider.transport is not None
-            ),
+            pega_specialist_enabled=self.pega_provider is not None,
         )
         agent = Agent(
             self._fallback_models,

@@ -185,6 +185,23 @@ configuration as:
 }
 ```
 
-The server needs no LLM configuration. The IDE agent supplies the reasoning
-and CodeWiki supplies the analysis tools. See
-[MCP / IDE-driven mode](mcp-ide-mode.md).
+The general source-code tools need no LLM configuration; the fork-specific
+`generate_pega_docs` tool requires the PEGA and model settings described in
+[MCP / IDE-driven mode](mcp-ide-mode.md). The chat agent supplies the
+reasoning and CodeWiki supplies the tools.
+
+## `codewiki pega-serve`
+
+Serves the latest completed PEGA wiki for `PEGA_PROJECT_ID` on `127.0.0.1:8766`
+and prints its URL. It locates runs from the evidence cache and configured run
+roots, so you do not need the generated run directory.
+
+```bash
+codewiki pega-serve                 # latest run, port 8766
+codewiki pega-serve --port 8767     # choose another port
+codewiki pega-serve --run-dir PATH  # serve a specific earlier run
+```
+
+The command reads `PEGA_PROJECT_ID`, `CODEWIKI_PEGA_CACHE_DIR`, and
+`CODEWIKI_PEGA_OUTPUT_ROOT` from the environment or the checkout's `.env.local`.
+Stop serving with Ctrl-C.

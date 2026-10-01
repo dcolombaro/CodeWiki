@@ -70,7 +70,7 @@ def _scope_selection(package: dict[str, Any]) -> dict[str, Any]:
     return {
         key: scope.get(key)
         for key in (
-            "mode", "seed_entity_ids", "depth", "relationship_types",
+            "mode", "release", "release_slug", "seed_entity_ids", "depth", "relationship_types", "relation_kinds",
             "expanded_entity_ids", "expansion_depth", "discovery",
         )
     }

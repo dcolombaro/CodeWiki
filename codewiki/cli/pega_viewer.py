@@ -111,6 +111,9 @@ def _navigation(
     def add_modules(tree: dict, depth: int = 0) -> None:
         for module, info in tree.items():
             key = f"docs/{module}.md"
+            children = info.get("children") or {}
+            if children:
+                module_links.append('<details class="nav-module" open><summary>')
             if key in pages:
                 module_links.append(
                     '<a class="nav-link" style="padding-left:'
@@ -118,11 +121,13 @@ def _navigation(
                     + 'px" href="'
                     + _route(key)
                     + '">'
-                    + html.escape(module.replace("_", " "))
+                    + html.escape(str(pages[key].get("title") or module.replace("_", " ")))
                     + "</a>"
                 )
-            if isinstance(info, dict) and isinstance(info.get("children"), dict):
-                add_modules(info["children"], depth + 1)
+            if children:
+                module_links.append('</summary>')
+                add_modules(children, depth + 1)
+                module_links.append('</details>')
 
     add_modules(module_tree)
 
@@ -141,17 +146,19 @@ def _navigation(
         (edge_links if key.startswith("evidence/edges/") else source_links).append(item)
 
     return (
-        '<div class="nav-section"><div class="nav-heading">Documentation</div>'
+        '<div class="nav-section documentation-navigation"><div class="nav-heading">Documentation</div>'
         + "".join(module_links)
-        + '</div><details class="nav-section"><summary>Official sources <span class="count">'
+        + '</div><details class="nav-section evidence-navigation"><summary>Evidence</summary>'
+        + '<p class="nav-note">Source documents and relationship receipts supporting the chapter citations.</p>'
+        + '<details class="nav-section"><summary>Official sources <span class="count">'
         + str(len(source_links))
         + "</span></summary>"
         + "".join(source_links)
-        + '</details><details class="nav-section"><summary>Graph relationships <span class="count">'
+        + '</details><details class="nav-section"><summary>Relationship receipts <span class="count">'
         + str(len(edge_links))
         + "</span></summary>"
         + "".join(edge_links)
-        + "</details>"
+        + "</details></details>"
     )
 
 

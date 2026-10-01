@@ -21,9 +21,15 @@
     .nav-section { margin:13px 0 18px; }
     .nav-heading,.nav-section summary { margin:0 8px 8px; color:var(--muted); font-size:11px; font-weight:750; text-transform:uppercase; letter-spacing:.08em; }
     .nav-section summary { cursor:pointer; }
+    .nav-module > summary { display:flex; align-items:center; margin:0; text-transform:none; letter-spacing:normal; font-size:inherit; }
+    .nav-module > summary::before { content:'▾'; font-size:12px; }
+    .nav-module:not([open]) > summary::before { content:'▸'; }
+    .nav-module > summary .nav-link { flex:1; min-width:0; font-weight:650; }
+    .nav-note { margin:6px 8px 12px; font-size:12px; color:var(--muted); }
     .count { float:right; }
     .nav-link { display:block; padding:7px 10px; border-radius:7px; color:var(--ink); text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .nav-link:hover { background:#e9f0f9; }
+    .documentation-navigation .nav-link { white-space:normal; line-height:1.4; }
     .nav-link.active { background:#dceafa; color:#123e72; font-weight:650; }
     .nav-link.hidden { display:none; }
     .main { min-width:0; padding:28px clamp(20px,4vw,64px) 80px; }
@@ -213,7 +219,7 @@
     document.getElementById('nav-filter').addEventListener('input', event => {
       const query = event.target.value.trim().toLocaleLowerCase();
       document.querySelectorAll('.nav-link').forEach(link => link.classList.toggle('hidden', !link.textContent.toLocaleLowerCase().includes(query)));
-      if (query) document.querySelectorAll('.nav-section[open],.nav-section').forEach(section => { if (section.tagName === 'DETAILS') section.open = true; });
+      if (query) document.querySelectorAll('.nav-section,.nav-module').forEach(section => { if (section.tagName === 'DETAILS') section.open = true; });
     });
     document.getElementById('menu-button').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open'));
     document.addEventListener('click', event => { const link = event.target.closest('a[href^="#/"]'); if (link && link.getAttribute('href') === location.hash) showPage(); });

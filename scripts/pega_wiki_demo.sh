@@ -17,6 +17,7 @@ for variable in CUSTOMER_MODEL_API_KEY CUSTOMER_MODEL_BASE_URL CUSTOMER_MODEL_ID
     exit 2
   fi
 done
+PEGA_RELEASE=${PEGA_RELEASE:-lead}
 
 codewiki_bin=${CODEWIKI_BIN:-"$repo_root/../codewiki_test/codewiki-runner/.venv/bin/codewiki"}
 if [[ ! -x "$codewiki_bin" ]]; then
@@ -32,9 +33,10 @@ export MERMAID_VALIDATE=0
 arguments=(
   pega-generate
   --project "$PEGA_PROJECT_ID"
+  --release "$PEGA_RELEASE"
   --mcp-command "$PEGA_PYTHON"
   --mcp-arg=-m
-  --mcp-arg=pega_kb.neo4j_mcp
+  --mcp-arg=pega_kb.mcp_server
   --mcp-cwd "$PEGA_KB_ROOT"
   --model "$CUSTOMER_MODEL_ID"
   --model-base-url "$CUSTOMER_MODEL_BASE_URL"

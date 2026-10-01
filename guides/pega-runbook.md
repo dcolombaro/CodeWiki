@@ -6,16 +6,38 @@ plans. It traces how CodeWiki turns the PEGA Agent knowledge base (KB) into
 final documentation and compares that route with CodeWiki's usual source-code
 route.
 
-The full-project run is
-`runs/unipollead-project-wiki-terra-20260929/`; its captured graph and
-document manifest are in `runs/unipollead-project-evidence-20260929/`. The live MCP capture selected
-807 PEGA entities, 1,996 directed relationships, and 493 official Markdown
-documents. CodeWiki assigned all 469 documented rules to 40 modules, wrote
-40 module pages and an overview, and created a local HTML viewer. The run
-directories are Git-ignored. Keep the evidence snapshot beside the wiki and the
-PEGA Agent input tree at its recorded path: the run links directly to the
-original Markdown files and keeps only metadata and hashes in the evidence
-cache.
+The completed replacement new-bundle wiki is
+`runs/unipollead-lead-wiki-20260930-v6/`. It captures the `lead` release only:
+480 graph entities, 793 directed relationships, and 438 official Markdown
+references. Its reviewed plan assigns all 437 documented rules to 16 leaf
+chapters under four capability overviews, plus a project overview (21 pages).
+The other graph entities are context or release structure. `leadtest` is a separate
+duplicate release and is intentionally not counted in this wiki. Markdown is
+linked from `pega-kb-codex-GTLLife-bundle/` and verified by hash.
+
+| Capability area | Leaf chapters | Owned rules |
+| --- | ---: | ---: |
+| Platform foundation | 2 | 34 |
+| Agency routing and allocation | 4 | 212 |
+| Agency search service | 3 | 66 |
+| Agency integration services | 7 | 125 |
+
+The v5 run had 32 flat modules. Discovery batches became final modules without
+a project-wide reconciliation pass, fragmenting related workflows. V6 adds
+that pass and validates nested leaf ownership. Its plan also records editorial
+regroupings under `planning.editorial_adjustments`. For example, the counter
+service's GET/POST handlers and contracts now share one chapter, and fiscal-code
+submission includes its validation and request/response definitions. The 793
+relationship receipts remain citation evidence, not documentation chapters.
+
+For historical context, the previous-bundle full-project run is
+`runs/unipollead-project-wiki-terra-20260929/`; its captured graph and document
+manifest are in `runs/unipollead-project-evidence-20260929/`. That older live
+capture selected 807 PEGA entities, 1,996 directed relationships, and 493
+official Markdown documents, assigning 469 documented rules to 40 modules.
+These runs are Git-ignored. The retired source bundle is preserved under
+`../archive/pega-kb-codex-unipolLead-legacy-20260930/`; the old source path is
+kept as a symlink so historical evidence references continue to resolve.
 
 ## View the complete UnipolLead wiki
 
@@ -24,15 +46,56 @@ Serve the latest PEGA run for the configured project on port 8766:
     codewiki pega-serve
 
 The command finds the latest completed run automatically and prints its URL.
-Open <http://127.0.0.1:8766/index.html>. The sidebar lists the 40 project
-modules; the overview links to every module. The locally bundled Mermaid
+Open <http://127.0.0.1:8766/index.html>. For v6, the Documentation sidebar shows
+four expandable capability areas and their 16 leaf chapters. Parent pages link
+their children. Official sources and relationship receipts are under a
+separate, collapsed Evidence section. The locally bundled Mermaid
 script renders diagrams without an external validation or rendering endpoint.
 For the exact ownership map, open `docs/module_tree.json` and `plan.json` in
 this run. For the captured input graph, open `evidence-package.json`; its
 source document bodies are linked from the original PEGA Agent input tree. The
-`evidence-manifest.json` records hashes, model calls, and the snapshot link.
+`evidence-manifest.json` records the source revision, evidence reads, model
+calls, and the snapshot link. V6 resumes an interrupted generation: its final
+call and evidence-read telemetry covers the final resumed segment because
+interrupted segments had not written a final manifest. Planning-call telemetry
+is retained separately in `plan.json`.
+
+For historical comparison, v5 is an unchanged-input incremental refresh from v4. It reuses all 32
+module pages and the overview with zero model calls. Its evidence snapshot key
+matches v4 and v6; v6 changes the documentation plan without changing the input.
+
+The v6 `structure-review.json` records complete leaf ownership, verified source
+references, working local links, parent indexes, and separation of evidence
+receipts from chapter navigation. These checks validate structure and traceability;
+they do not prove every generated semantic statement.
+The `incremental-review.json` records an unchanged-input replay that reused all
+20 module pages and the project overview, with zero model calls and byte-identical
+Markdown for all 21 pages. A changed source under a nested leaf invalidates that
+leaf and its ancestor overviews while preserving unrelated siblings.
+
+## Inspect the new-bundle CercaAgenzia example
+
+The current focused run is `runs/cercaagenzia-lead-wiki-20260930/`. It uses
+`CercaAgenzia` in the `lead` release as its seed, follows `CALLS_ACTIVITY`,
+`RUNS_DATA_TRANSFORM`, and `EVALUATES_DECISION_TABLE`, and expands
+`AzioneMotoreGeoMeritocratico` by one additional hop. The package contains 18
+entities, 21 directed relationships, and 18 official Markdown documents. Its
+plan assigns the 18 documented rules to six modules. These counts describe
+this selected slice; the full project wiki above contains the whole `lead`
+release.
+
+The focused viewer is available on port 8767 while the latest full project
+viewer uses port 8766:
+
+    codewiki pega-serve --project unipolLead \
+      --run-dir runs/cercaagenzia-lead-wiki-20260930 --port 8767
+
+Open <http://127.0.0.1:8767/index.html>.
 
 ## Inspect the earlier Agency Lookup PoC
+
+This historical frozen example uses the old bundle's identities and Markdown;
+the new focused run above is the current comparison target.
 
 The example run is runs/cercaagenzia-wiki-terra-frozen-20260928-v3/ (relative
 to the CodeWiki repository root). This run directory is Git-ignored. It is one
@@ -187,9 +250,10 @@ The run-root plan.json has the rule ownership, module purposes, scope, and
 supporting-entity rationale. Each documented rule has exactly one primary
 owner, though another page may discuss or link to it.
 
-In a later run, a large module can be split recursively. The final
-module_tree.json may then have nested children while first_module_tree.json
-preserves the initial plan; do not assume they always match.
+Current PEGA runs plan the complete hierarchy before writing. Parent entries
+summarize their children; rules have one primary leaf owner. Writers keep those
+boundaries fixed, so both tree files preserve the validated plan. Historical
+runs may contain submodules added during writing.
 
 ## From the PEGA KB to the final wiki
 
@@ -203,13 +267,13 @@ The configured PEGA KB workflow is:
 
     ingest -> synthesize -> verify-corpus -> project-graph -> index
 
-Ingest reads eligible Pega XML exports and produces category-aware official
-Markdown. Synthesis can add a functional interpretation to that Markdown.
-Deterministic extraction and graph projection remain distinguishable from
-LLM-written interpretation. Corpus verification checks the prepared material
-before graph projection and indexing publish the Neo4j representation. The
-official corpus for a project is under
-projects/PROJECT_ID/kb/markdown/synthesis/.
+The new PEGA bundle regenerates deterministic, category-aware Markdown from
+the XML export and builds a release-scoped Neo4j projection. CodeWiki uses
+these regenerated Markdown files as the canonical input. The old bundle's
+synthesized Markdown is historical material: it is preserved with the archived
+old bundle, but is not merged into the new corpus because its identities and
+content no longer match the regenerated graph and documents. Existing old
+CodeWiki runs and evidence packages remain untouched for replay.
 
 This upstream work is complete before CodeWiki starts. Neo4j is the discovery
 source for entity identity and relationships; official Markdown supplies
@@ -218,46 +282,40 @@ conditions, and request/response mappings.
 
 ### CodeWiki capture and evidence checks
 
-1. **Resolve the project revision and requested scope.** The provider checks
-   `kb_status` for project identity and graph counts, then uses the existing
-   PEGA MCP `read_cypher` tool to read `KBProject.projection_manifest_hash`
-   and its status. If that node is unavailable in an older KB, it derives a
-   revision from existing entity `projection_token` values. It stops if the
-   available status says indexing is not ready or no stable revision can be
-   established. The default scope is the complete project; a focused request
-   adds an exact seed and traversal parameters. The persistent cache key
-   includes both project and scope.
+1. **Resolve the project revision and requested scope.** The provider calls
+   `catalog`, `list_releases`, and `kb_status`, then selects exactly one
+   application release. The default for UnipolLead is project `unipolLead`,
+   release slug `lead`; `leadtest` is a separate generation because it
+   contains a second materialized copy of the same 437 rules. The revision
+   combines the selected release's manifest `content_hash` with SHA-256 hashes
+   of all Markdown files referenced by that release. This catches both graph
+   projection changes and deterministic Markdown regeneration. The cache key
+   includes project, release, and requested scope.
 2. **Reuse or capture graph evidence.** If the cache contains a complete package
    for this scope at the live project revision, CodeWiki reuses it. If a complete
    project package is cached, CodeWiki can derive a requested focused slice
-   locally. Otherwise it captures graph evidence. The project capture paginates an empty-query
-   `search_entities` inventory including external references, then runs a
-   fixed, project-scoped `read_cypher` query for every directed PEGA-to-PEGA
-   edge in stable relationship-ID order. It verifies entity, edge, and linked
-   document counts. The PoC instead uses `get_entity`: each call returns one
-   exact entity and its incoming/outgoing edges, retaining direction and
-   properties. A breadth-first walk follows requested edge types up to the
-   chosen depth, with one extra hop from an explicitly expanded entity. For
-   the historical CercaAgenzia PoC, the selected types cover service
-   invocation, activity call, data transform, decision table, and data page;
-   the geo-merit strategy is expanded once.
-3. **Select and reference official Markdown when capturing.** CodeWiki obtains document IDs
-   from the selected entities and reads those documents using MCP
-   `get_document`. It reads the local file named by `source_path` and checks
-   its hash against the MCP body. The verified local text is kept in memory
-   for planning and writing; the cache gets a symlink to the original file and
-   a small metadata record with the SHA-256. Generated wiki runs link to the
-   same original files; they do not make Markdown copies. The writer receives
-   Markdown through the bounded evidence reader and does not open raw XML.
-   CodeWiki does not scan the entire Markdown corpus to discover rules.
+   locally. Otherwise it captures graph evidence through `read_cypher`,
+   restricted to the selected `$release`. Node IDs are release-prefixed UIDs
+   (`<application_release_id>|<node_id>`). It pages all `Scoped` nodes and
+   directed edges, retaining full node/edge properties, edge direction,
+   `relation_kind`, and call-site fields. The complete-project counts must
+   match `kb_status`. A focused capture resolves names with `find_rules`, then
+   uses exact UIDs and graph traversal for the requested depth.
+3. **Select and reference deterministic Markdown.** Each node's
+   `markdown_path` identifies its official deterministic Markdown file under
+   `projects/unipolLead/kb/markdown/`. CodeWiki validates the path stays inside
+   the selected project and hashes the actual file. It creates a symlink in the
+   evidence cache plus a small metadata record; the PEGA Markdown itself is
+   never copied into a run. The same path and hash go into the evidence
+   package. Writers read selected documents through the bounded evidence
+   reader and never inspect the XML export.
 4. **Bind planning and writing to the package.** Whether reused, derived, or
    freshly captured, `evidence-package.json` contains the exact scope, entity
    cards, typed directed relationships, selected-document manifest, unresolved
-   references, and fingerprint used for this run. On a cache hit CodeWiki
-   verifies its package metadata and local source hashes without calling
-   `get_entity` or `get_document`. A new capture compares each selected source
-   hash with the MCP document body. CodeWiki checks the project revision again
-   after capture and stops if it changed while evidence was being gathered.
+   references, release, and fingerprint used for this run. On a cache hit
+   CodeWiki verifies package metadata and linked source hashes. A new capture
+   checks the selected release's graph manifest and Markdown hashes again after
+   capture and stops if either changed during acquisition.
    The manifest records the revision decision as reused, locally derived, or
    recaptured. After this boundary, the specialist only searches and traverses
    the package in memory; it does not query Neo4j.
@@ -281,33 +339,44 @@ diagnostics.
    with CodeWiki's shared module machinery, a generic `depends_on` view is
    derived from a selected subset of behavioral edge types. This compatibility
    view is not the source of truth: `evidence-package.json` retains all captured
-   typed edges and qualifiers.
-6. **Plan modules and enforce ownership.** This step builds the page layout;
-   it does not expand or rewrite the captured graph. A reviewed plan, when
-   supplied, is checked against this exact evidence package. Otherwise the
-   planner groups the package's documented rules using each rule's name,
-   type, Applies-To class, ruleset, complete selected Markdown section, and graph context. For every
-   batch rule, the planner receives all captured directed edges touching that
-   rule, including edges to entities outside the batch, plus compact metadata
-   cards for those connected entities. This can expose shared dependencies and
-   links across batch boundaries. Supporting cards are context only: only
-   documented rule IDs in the batch's owner cards can be assigned to modules.
-   It prefers the PEGA Agent's
-   *Functional synthesis* section when available; that text is an upstream
-   interpretation. If it is absent,
-   the planner can use *Extracted configuration* instead. It includes the
-   complete chosen section, without cutting it to a character count. For a
-   whole project, CodeWiki keeps ruleset and Applies-To class groups intact and
-   packs them toward the configured planner prompt-size target. It never cuts
-   a Markdown section or splits a group to meet that target; an oversized group
-   is sent whole. The batch rule counts are recorded in `plan.json`, with no
-   fixed rule-count cap. In the final `plan.json` and
-   `docs/module_tree.json`, each documented rule ID must have exactly one
-   primary module owner. A supporting entity can inform a page without owning
-   a page of its own. Invalid model ownership is recorded and assigned to an
-   explicit fallback module for that batch; the run manifest exposes any such
-   fallback for review. The current planning batch count and any fallback
-   batches are recorded in `plan.json`.
+   typed edges and qualifiers. In the new schema, Neo4j edge types are
+   `CALLS`, `READS`, and `WRITES`; the Pega-specific meaning is retained in
+   each edge's `relation_kind` property.
+6. **Discover capabilities, then reconcile the project hierarchy.** A complete
+   project uses two planning stages. Discovery batches read each rule's metadata,
+   complete selected Markdown section, every captured incident edge, and cards
+   for adjacent entities. The new bundle's section is *Configurazione*; older
+   bundles can supply *Functional synthesis* or *Extracted configuration*.
+   Ruleset/class groups keep this discovery input manageable. Complete sections
+   and groups are retained, with no fixed rule-count cap. Each batch proposes
+   provisional capabilities and explains their purposes.
+
+   The project-wide planner then receives the full rule catalog, those
+   evidence-derived findings, and summaries of **all** captured directed edges,
+   including links across batches. It can merge, split, and reassign rules from
+   any batch. It forms reader-facing capability overviews with coherent workflow
+   or shared-reference chapters beneath them. For example, an API's validation,
+   request/response records, and orchestration should be explained together when
+   they serve one workflow. A discovery batch, class, or graph edge does not
+   determine a final page boundary.
+
+   Short planning references are mapped back to exact graph IDs before ownership
+   validation. Every documented rule belongs to exactly one **leaf**. Parent
+   `components` lists are the union of their descendants for compatibility with
+   CodeWiki; parents do not acquire another primary ownership claim. The plan
+   records recursive `modules`, `primary_owner`, `module_paths`, rationale,
+   discovery findings, and planning telemetry. Invalid final ownership gets one
+   correction attempt; a still-invalid hierarchy stops generation. A reviewed
+   plan is subject to the same ownership checks. Focused slices can use a single
+   planning call when the whole selected context fits together.
+
+   Coverage validation proves that rules have owners; useful chapter boundaries
+   also need editorial review. Check that public endpoints keep their operation
+   handlers and contracts together, validation stays with its workflow, and
+   declaration-only fragments are absorbed into a relevant capability. The
+   `--plan-file` option applies a reviewed plan for the exact snapshot. Record
+   deliberate regroupings in `planning.editorial_adjustments` so the generated
+   run retains the reason for each change.
 7. **Write evidence-linked module pages.** For a leaf in
    `docs/module_tree.json`, its `components` list tells CodeWiki which PEGA
    rules the page is responsible for explaining. CodeWiki gives the writer
@@ -325,15 +394,17 @@ diagnostics.
    likewise limited to document IDs selected into the package and are logged
    with the returned excerpt hash. A missing entity, edge, or document is
    reported as outside the captured scope; generation does not silently widen
-   the snapshot. Each writer edits only its assigned page under `docs/`.
-8. **Write the overview from module pages.** Module pages are written first;
-   the Pega overview writer then summarizes and links them. It adds a Mermaid
-   diagram only where the child pages support its labeled relationships.
-   Recursive submodule generation can extend the module tree for a large
-   module.
+   the snapshot. Each writer edits only its assigned page under `docs/` and
+   receives the complete hierarchy and page purposes. It cannot add submodules
+   or redefine the validated ownership boundaries.
+8. **Write parent pages and the overview.** Leaves are written first; each
+   capability overview then summarizes and links its completed children. The
+   project overview summarizes the top-level capabilities. Every parent gets
+   a deterministic child-page index. Diagrams use relationships supported by
+   the child pages.
 9. **Add inventories and validate output.** After the model writes the prose,
    CodeWiki appends a deterministic `## Source inventory` section to each
-   module page. This is an audit list produced from the package and validated
+   leaf page. This is an audit list produced from the package and validated
    plan, not extra model-written explanation:
 
    - **Owned rules** lists every rule assigned to that page by its name, PEGA
@@ -347,11 +418,11 @@ diagnostics.
    means edges present in that slice; it does not claim that every project
    edge is listed or that a configured relationship ran at runtime.
 
-   For example, the PoC page
+   For example, the CercaAgenzia page
    `docs/Agency_Lookup_Dispatch_and_Validation.md` lists `CercaAgenzia` and
    its official Markdown under *Owned rules*. Under *Directed relationships*
-   it lists edges such as `CercaAgenzia — CALLS_ACTIVITY → ...` with their
-   step paths and edge-receipt links. The prose above that appendix explains
+   it lists edges such as `CercaAgenzia — CALLS (relation_kind:
+   CALLS_ACTIVITY) → ...` with their call-site IDs and edge-receipt links. The prose above that appendix explains
    the workflow; the inventory below it lets a reviewer check which rules and
    captured edges the page was assigned to cover.
 
@@ -379,14 +450,22 @@ is needed for whole-project documentation:
 ```bash
 codewiki pega-generate \
   --project "$PEGA_PROJECT_ID" \
+  --release "${PEGA_RELEASE:-lead}" \
   --mcp-command "$PEGA_PYTHON" \
-  --mcp-arg=-m --mcp-arg=pega_kb.neo4j_mcp \
+  --mcp-arg=-m --mcp-arg=pega_kb.mcp_server \
   --mcp-cwd "$PEGA_KB_ROOT" \
   --model "$CUSTOMER_MODEL_ID" \
   --model-base-url "$CUSTOMER_MODEL_BASE_URL" \
   --api-key-env CUSTOMER_MODEL_API_KEY \
   --output runs/pega-project-wiki
 ```
+
+If generation is interrupted, repeat the live command with the same arguments,
+the same existing output directory, and `--resume-existing`. CodeWiki rechecks
+the live graph/Markdown revision and verifies the saved package, plan, and
+module tree. It then reuses completed pages and writes the missing ones. If the
+inputs changed or those saved artifacts no longer match, resume stops; run a
+fresh generation to a new directory.
 
 For each leaf entry in `docs/module_tree.json`, its `components` array contains
 the exact IDs of the documented PEGA rules assigned to that page. CodeWiki
@@ -431,11 +510,12 @@ Then ask for the complete project by name. With no seed, the tool documents the
 configured project. For a focused request, name the PEGA activity/rule and the
 desired depth, for example “Document `CercaAgenzia` and its connected workflow
 to depth 2.” The tool checks the project revision and reuses matching evidence
-from its persistent cache. A complete cached project package can provide a
+from its persistent cache. A complete cached release package can provide a
 focused slice locally. Otherwise the tool resolves the exact name with
-`search_entities`; if ambiguous, it returns candidates for the chat to clarify.
-It uses `get_entity` for bounded traversal and `get_document` for the selected
-official Markdown, then writes from that package. Matching pages from the
+`find_rules`; if ambiguous, it returns candidates for the chat to clarify.
+It uses release-scoped UIDs and the new `read_cypher`/`neighbors` schema for
+bounded traversal, then reads the Markdown paths selected by the graph.
+Matching pages from the
 previous run for the same scope are reused automatically. Pass `replan=true`
 to reuse evidence but rerun planning and every writer. The response includes
 the evidence-cache decision, output directory, and viewer path. A seed's
@@ -457,13 +537,13 @@ Current ChatGPT plan/admin requirements are described in
 | evidence/ | Links to original PEGA Agent Markdown and stores small metadata records; edges/ holds generated relationship receipts |
 | plan.json | Validated module ownership, rationale, and supporting entities |
 | docs/module_tree.json | Final documentation hierarchy |
-| docs/first_module_tree.json | Initial hierarchy before recursive submodule additions |
+| docs/first_module_tree.json | Validated hierarchy saved before writing; current PEGA writers keep it fixed |
 | docs/*.md | Final overview and module pages with citations and source inventories |
 | docs/metadata.json | Generator, model, project, component counts, and generated page list |
 | evidence-manifest.json | Retrieval mode, evidence storage mode, graph/document identity, prompt/implementation, evidence reads, requests, and model telemetry |
 | index.html and assets/ | Navigable local wiki and Mermaid bundle |
 
-The named v3 example predates source-linked evidence storage, so its existing
+The historical v3 example predates source-linked evidence storage, so its existing
 `evidence/` Markdown files remain bundled in that historical run. New captures
 and runs link directly to PEGA Agent source Markdown by default.
 `--bundle-evidence` is the explicit opt-in for portable copies.
@@ -471,13 +551,15 @@ and runs link directly to PEGA Agent source Markdown by default.
 ## Refresh documentation incrementally
 
 Run the same `pega-generate` command—or ask the MCP tool for the same
-project/scope—into a new empty output directory. CodeWiki checks the current
-project manifest hash (or existing graph projection tokens) first. If the exact evidence package and generation
-contract are unchanged, it reuses the previous plan and pages without graph
+project/scope—into a new empty output directory. CodeWiki checks the selected
+release manifest revision (falling back to row projection tokens for older
+KBs) and hashes referenced Markdown files. If the exact evidence package and
+generation contract are unchanged, it reuses the previous plan and pages without graph
 traversal, document retrieval, component adaptation, or model calls. If the
 graph revision changed, it captures the requested scope, compares entities,
 typed relationships, Markdown hashes, and document metadata, then reuses
-unaffected pages and regenerates affected modules. If the prompt, code, model,
+unaffected pages and regenerates affected leaves and their ancestor overview
+pages. Sibling branches remain reusable. If the prompt, code, model,
 selection scope, or ownership changes, it replans and regenerates as needed.
 The decision and its reasons are recorded in `evidence-manifest.json`.
 
@@ -503,10 +585,10 @@ post-processing.
 | Source facts | Local code and optional build/configuration files | Published Neo4j graph and official PEGA Agent Markdown selected through graph IDs |
 | Dependency graph construction | DependencyGraphBuilder and DependencyParser analyze source files; language analyzers use TreeSitter/ASTs | PEGA Agent has already projected typed relationships into Neo4j; CodeWiki captures them through MCP. Repository parsing and TreeSitter are bypassed |
 | Analysis artifact | CodeWiki dependency-graph JSON and leaf components for clustering | No standard dependency-graph JSON; evidence-package.json preserves typed edges, with a temporary CodeWiki Node compatibility view |
-| Module planning | LLM clustering and super-grouping use the source dependency graph; agents can add submodules | Pega planner groups captured documented rules by capability and validates exact ownership for this snapshot; agents can add submodules |
+| Module planning | LLM clustering and super-grouping use the source dependency graph; agents can add submodules | Discovery reads semantic/configuration evidence in batches; global reconciliation forms a hierarchy across all batches and validates exact leaf ownership before writing |
 | Writer evidence tools | read_code_components reads source components | read_pega_evidence reads package-selected Markdown; specialist search and traversal stay within the captured graph |
 | Meaning of a link | A static dependency/reference extracted from source code | A typed Pega configuration relationship with direction, qualifiers, and provenance; it is not an execution trace |
-| Refresh | CodeWiki compares repository changes and refreshes affected docs | One `pega-generate`/MCP request checks the project manifest or row-token revision, reuses or refreshes scoped evidence, and incrementally reuses pages for the same scope |
+| Refresh | CodeWiki compares repository changes and refreshes affected docs | One `pega-generate`/MCP request checks the selected release manifest and referenced Markdown hashes, reuses or refreshes scoped evidence, and incrementally reuses pages for the same scope |
 | Optional artifact analysis | Build, CI, container, and configuration artifacts can add nodes | Disabled by the PEGA generator; upstream PEGA graph/document evidence is used |
 | Mermaid | Normal CodeWiki writing can validate Mermaid before saving | PEGA route disables remote validation; local viewer renders with its bundled JavaScript |
 
@@ -537,5 +619,5 @@ contract, module planning rules, writer instructions, and available tools.
 - [Pega module planner](../codewiki/src/be/pega_planner.py)
 - [Pega writer and overview prompts](../codewiki/src/be/pega_prompts.py)
 - [Pega local viewer](../codewiki/cli/pega_viewer.py)
-- [PEGA Agent KB skill](../../pega-kb-codex-unipolLead/.codex/skills/pega-kb/SKILL.md)
-- [PEGA graph navigation guidance](../../pega-kb-codex-unipolLead/.codex/skills/pega-kb/references/pega-navigation.md)
+- [PEGA Agent KB skill](../../pega-kb-codex-GTLLife-bundle/.codex/skills/pega-kb/SKILL.md)
+- [PEGA graph navigation guidance](../../pega-kb-codex-GTLLife-bundle/.codex/skills/pega-kb/references/pega-navigation.md)

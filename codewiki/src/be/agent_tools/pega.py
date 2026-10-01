@@ -134,6 +134,60 @@ class SpecialistDeps:
         return True
 
 
+def _resolve_captured_entity_id(provider: PegaGraphProvider, value: str) -> str | None:
+    """Resolve a model-supplied short rule ID only within the captured package."""
+    if value in provider._entities:
+        return value
+    matches = []
+    for entity_id, entity in provider._entities.items():
+        properties = entity.properties or {}
+        candidates = {
+            entity_id,
+            entity_id.rsplit("|", 1)[-1],
+            entity_id.rsplit(":", 1)[-1],
+            str(properties.get("uid") or ""),
+            str(properties.get("node_id") or ""),
+            str(properties.get("uid") or "").rsplit(":", 1)[-1],
+            str(properties.get("node_id") or "").rsplit(":", 1)[-1],
+        }
+        if value in candidates:
+            matches.append(entity_id)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_captured_relationship_id(provider: PegaGraphProvider, value: str) -> str | None:
+    if value in provider._relationships:
+        return value
+    matches = []
+    for relationship_id, edge in provider._relationships.items():
+        properties = edge.properties or {}
+        candidates = {
+            relationship_id,
+            relationship_id.rsplit("|", 1)[-1],
+            relationship_id.rsplit("::", 1)[-1],
+            relationship_id.rsplit(":", 1)[-1],
+            str(properties.get("edge_uid") or ""),
+            f"relationship:{properties.get('edge_uid')}" if properties.get("edge_uid") else "",
+            str(properties.get("edge_uid") or "").rsplit(":", 1)[-1],
+        }
+        if value in candidates:
+            matches.append(relationship_id)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_captured_document_id(provider: PegaGraphProvider, value: str) -> str | None:
+    if value in provider._selected_document_ids:
+        return value
+    matches = [
+        document_id
+        for document_id in provider._selected_document_ids
+        if document_id.rsplit("::", 1)[-1] == value
+        or document_id.rsplit(":", 1)[-1] == value
+        or document_id.endswith(value)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 async def specialist_search(
     ctx: RunContext[SpecialistDeps],
     query: str,
@@ -183,8 +237,10 @@ async def specialist_inspect(ctx: RunContext[SpecialistDeps], entity_id: str) ->
     """Inspect one exact entity and its directed relationships in the captured package."""
     if not ctx.deps.spend():
         return '{"partial":true,"reason":"retrieval budget exhausted"}'
-    entity = ctx.deps.provider._entities.get(entity_id)
-    if entity is None:
+    provider = ctx.deps.provider
+    resolved_id = _resolve_captured_entity_id(provider, entity_id)
+    entity = provider._entities.get(resolved_id) if resolved_id else None
+    if entity is None or resolved_id is None:
         return json.dumps(
             {"error": "entity_not_in_captured_evidence_package", "entity_id": entity_id}
         )
@@ -198,7 +254,7 @@ async def specialist_inspect(ctx: RunContext[SpecialistDeps], entity_id: str) ->
             "properties": edge.properties,
         }
         for edge in ctx.deps.provider._relationships.values()
-        if entity_id in (edge.source_entity_id, edge.target_entity_id)
+        if resolved_id in (edge.source_entity_id, edge.target_entity_id)
     ]
     if len(edges) > 100:
         ctx.deps.partial = True
@@ -220,12 +276,18 @@ async def specialist_traverse(
     provider = ctx.deps.provider
     if not entity_ids or len(entity_ids) > 50 or not 1 <= depth <= 8:
         return json.dumps({"error": "invalid_bounded_traversal_parameters"})
-    if any(entity_id not in provider._entities for entity_id in entity_ids):
+    resolved_ids = [_resolve_captured_entity_id(provider, item) for item in entity_ids]
+    if any(entity_id is None for entity_id in resolved_ids):
         return json.dumps({"error": "seed_entity_not_in_captured_evidence_package"})
+    entity_ids = [item for item in resolved_ids if item is not None]
     selected_types = set(relationship_types or [])
     adjacency: dict[str, list[tuple[str, Any]]] = {}
     for edge in provider._relationships.values():
-        if selected_types and edge.relationship_type not in selected_types:
+        if (
+            selected_types
+            and edge.relationship_type not in selected_types
+            and edge.properties.get("relation_kind") not in selected_types
+        ):
             continue
         adjacency.setdefault(edge.source_entity_id, []).append((edge.target_entity_id, edge))
         adjacency.setdefault(edge.target_entity_id, []).append((edge.source_entity_id, edge))
@@ -368,25 +430,50 @@ async def retrieve_pega_context(ctx: RunContext[CodeWikiDeps], question: str) ->
     if specialist_deps.partial:
         answer.complete_for_question = False
         answer.uncertainties.append("The bounded retrieval returned partial evidence.")
+    canonical_entities = []
+    invalid_references: list[str] = []
     for entity_id in answer.entity_ids:
-        provider._check_id(entity_id, "entity")
-        if entity_id not in provider._entities:
-            raise ValueError(f"Specialist cited an unseen entity {entity_id}")
+        resolved = _resolve_captured_entity_id(provider, entity_id)
+        if resolved is None:
+            invalid_references.append(f"entity {entity_id}")
+        else:
+            canonical_entities.append(resolved)
+    answer.entity_ids = canonical_entities
+    canonical_relationships = []
     for relation_id in answer.relationship_ids:
-        provider._check_id(relation_id, "relationship")
-        if relation_id not in provider._relationships:
-            raise ValueError(f"Specialist cited an unseen relationship {relation_id}")
+        resolved = _resolve_captured_relationship_id(provider, relation_id)
+        if resolved is None:
+            invalid_references.append(f"relationship {relation_id}")
+        else:
+            canonical_relationships.append(resolved)
+    answer.relationship_ids = canonical_relationships
+    verified_citations = []
     for citation in answer.citations:
-        document = provider.cache.get_document(citation.document_id)
+        resolved_document_id = _resolve_captured_document_id(provider, citation.document_id)
+        if resolved_document_id is None:
+            invalid_references.append(f"unselected or ambiguous document {citation.document_id}")
+            continue
+        citation.document_id = resolved_document_id
+        document = provider.cache.get_document(resolved_document_id)
         if document is None:
-            raise ValueError(f"Specialist cited an unread document {citation.document_id}")
+            invalid_references.append(f"unread document {citation.document_id}")
+            continue
         try:
             document.section_bounds(citation.section)
-        except KeyError as exc:
-            raise ValueError(
-                f"Specialist cited an absent section {citation.section!r} "
-                f"in {citation.document_id}"
-            ) from exc
+        except KeyError:
+            invalid_references.append(
+                f"absent section {citation.section!r} in {citation.document_id}"
+            )
+            continue
+        verified_citations.append(citation)
+    answer.citations = verified_citations
+    if invalid_references:
+        answer.complete_for_question = False
+        answer.summary = "The specialist could not verify its full cross-rule answer against captured evidence."
+        answer.uncertainties.append(
+            "Unverified references were removed: " + "; ".join(invalid_references)
+        )
+        provider._specialist_events[-1]["partial"] = True
     return answer.model_dump_json(indent=2)
 
 

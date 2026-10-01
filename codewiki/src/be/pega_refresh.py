@@ -17,6 +17,7 @@ from codewiki.src.be.sources.pega_mcp import (
 
 def scope_request(
     *,
+    release: str = "lead",
     seed_id: str | None = None,
     seed_name: str | None = None,
     rule_type: str | None = None,
@@ -24,13 +25,15 @@ def scope_request(
     ruleset: str | None = None,
     depth: int = 1,
     relationship_types: list[str] | None = None,
+    relation_kinds: list[str] | None = None,
     expand_entity_ids: list[str] | None = None,
     max_documents: int = 40,
 ) -> dict[str, Any]:
     if not seed_id and not seed_name:
-        return {"mode": "project"}
+        return {"mode": "project", "release": release}
     return {
         "mode": "focused",
+        "release": release,
         "seed_id": seed_id,
         "seed_name": seed_name.strip() if seed_name else None,
         "rule_type": rule_type,
@@ -38,6 +41,7 @@ def scope_request(
         "ruleset": ruleset,
         "depth": depth,
         "relationship_types": sorted(set(relationship_types or [])),
+        "relation_kinds": sorted(set(relation_kinds or [])),
         "expand_entity_ids": sorted(set(expand_entity_ids or [])),
         "max_documents": max_documents,
     }
@@ -91,9 +95,10 @@ def stamp_project_revision(package: dict[str, Any], revision: str) -> None:
 class PegaEvidenceStore:
     """Persist packages and source links independently from generated wiki runs."""
 
-    def __init__(self, root: Path, project_id: str) -> None:
+    def __init__(self, root: Path, project_id: str, release: str = "lead") -> None:
         self.project_root = root.expanduser().resolve() / digest(project_id)[:24]
         self.project_id = project_id
+        self.release = release
         self.project_root.mkdir(parents=True, exist_ok=True)
 
     def request_key(self, request: dict[str, Any]) -> str:
@@ -104,7 +109,7 @@ class PegaEvidenceStore:
 
     @property
     def project_request(self) -> dict[str, Any]:
-        return {"mode": "project"}
+        return {"mode": "project", "release": self.release}
 
     @property
     def project_package(self) -> Path:
@@ -231,7 +236,8 @@ def _status_matches(package: dict[str, Any], live_status: dict[str, Any]) -> boo
     return all(
         cached.get(key) == live_status.get(key)
         for key in (
-            "project_id", "entities", "documents", "relationships",
+            "project_id", "release", "slug", "content_hash",
+            "entities", "documents", "relationships",
         )
     )
 
@@ -281,6 +287,7 @@ def slice_project_package(
     seed_entity_id: str,
     depth: int,
     relationship_types: list[str] | None,
+    relation_kinds: list[str] | None = None,
     expand_entity_ids: list[str] | None,
     max_documents: int,
 ) -> dict[str, Any]:
@@ -292,13 +299,17 @@ def slice_project_package(
         raise KeyError(f"Seed entity {seed_entity_id} is absent from the cached project package")
     edges = package.get("relationships") or []
     selected_types = set(relationship_types or [])
+    selected_kinds = set(relation_kinds or [])
 
     def neighbors(entity_id: str) -> set[str]:
         result: set[str] = set()
         for edge in edges:
             if entity_id not in (edge["source_entity_id"], edge["target_entity_id"]):
                 continue
+            relation_kind = (edge.get("properties") or {}).get("relation_kind")
             if selected_types and edge["relationship_type"] not in selected_types:
+                continue
+            if selected_kinds and (edge.get("properties") or {}).get("relation_kind") not in selected_kinds:
                 continue
             if edge["relationship_type"] in {"DESCRIBES", "HAS_CHUNK"}:
                 continue
@@ -334,10 +345,16 @@ def slice_project_package(
         scope_ids.update(neighbors(entity_id))
 
     selected_entities = [entities[entity_id] for entity_id in sorted(scope_ids)]
-    selected_relationships = [
-        edge for edge in edges
-        if edge["source_entity_id"] in scope_ids and edge["target_entity_id"] in scope_ids
-    ]
+    selected_relationships = []
+    for edge in edges:
+        if edge["source_entity_id"] not in scope_ids or edge["target_entity_id"] not in scope_ids:
+            continue
+        relation_kind = (edge.get("properties") or {}).get("relation_kind")
+        if selected_types and edge["relationship_type"] not in selected_types:
+            continue
+        if selected_kinds and relation_kind not in selected_kinds:
+            continue
+        selected_relationships.append(edge)
     document_ids = sorted({
         document_id
         for entity in selected_entities
@@ -366,10 +383,15 @@ def slice_project_package(
     result = {
         "source_kind": "pega",
         "project_id": package["project_id"],
+        "source_contract": package.get("source_contract"),
         "scope": {
+            "mode": "focused",
             "seed_entity_ids": [seed_entity_id],
             "depth": depth,
             "relationship_types": sorted(selected_types),
+            "relation_kinds": sorted(selected_kinds),
+            "release": (package.get("scope") or {}).get("release"),
+            "release_slug": (package.get("scope") or {}).get("release_slug"),
             "discovery": "cached_project_graph_bfs",
             "entity_count": len(scope_ids),
             "document_count": len(selected_documents),
@@ -395,6 +417,7 @@ def slice_project_package(
 async def prepare_pega_evidence(
     *,
     project: str,
+    release: str = "lead",
     client: PegaMCPClient,
     source_root: Path,
     store: PegaEvidenceStore,
@@ -406,6 +429,7 @@ async def prepare_pega_evidence(
     provider = PegaGraphProvider(
         client,
         project=project,
+        release=release,
         cache_dir=store.evidence_dir(request),
         source_root=source_root,
     )
@@ -442,6 +466,7 @@ async def prepare_pega_evidence(
             full_provider = PegaGraphProvider(
                 None,
                 project=project,
+                release=release,
                 cache_dir=store.evidence_dir(store.project_request),
                 source_root=source_root,
             )
@@ -454,6 +479,7 @@ async def prepare_pega_evidence(
                     seed_entity_id=seed_id,
                     depth=int(request["depth"]),
                     relationship_types=request.get("relationship_types") or None,
+                    relation_kinds=request.get("relation_kinds") or None,
                     expand_entity_ids=request.get("expand_entity_ids") or None,
                     max_documents=int(request["max_documents"]),
                 )
@@ -489,6 +515,7 @@ async def prepare_pega_evidence(
             seed_entity_id=seed_id,
             depth=int(request["depth"]),
             relationship_types=request.get("relationship_types") or None,
+            relation_kinds=request.get("relation_kinds") or None,
             expand_entity_ids=request.get("expand_entity_ids") or [],
             max_documents=int(request["max_documents"]),
         )

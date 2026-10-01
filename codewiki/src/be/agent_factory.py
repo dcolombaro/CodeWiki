@@ -49,7 +49,7 @@ def module_agent_spec(
             else format_leaf_system_prompt(module_name, custom_instructions)
         )
         tools = [read_code_components_tool, str_replace_editor_tool]
-    if complex_module and delegation_tool is not None:
+    if source_kind != "pega" and complex_module and delegation_tool is not None:
         tools.append(delegation_tool)
     return prompt, tools
 
@@ -77,6 +77,9 @@ def module_user_prompt(
         {
             "id": edge.id,
             "type": edge.relationship_type,
+            "relation_kind": edge.properties.get("relation_kind"),
+            "step_path": edge.properties.get("step_path"),
+            "http_method": edge.properties.get("http_method"),
             "source_entity_id": edge.source_entity_id,
             "target_entity_id": edge.target_entity_id,
             "document_id": edge.document_id,
@@ -89,15 +92,21 @@ def module_user_prompt(
         for edge in pega_provider._relationships.values()
         if edge.source_entity_id in core_component_ids or edge.target_entity_id in core_component_ids
     ]
-    if len(edges) > 180:
-        edge_context: Any = {"shown": edges[:180], "remaining": len(edges) - 180}
-    else:
-        edge_context = edges
-    tree_context = {
-        name: info.get("components", [])
-        for name, info in module_tree.items()
-        if isinstance(info, dict)
-    }
+    tree_context = []
+    purposes = getattr(pega_provider, "_module_purposes", {})
+
+    def visit(branch: dict[str, Any], parent_path: list[str]) -> None:
+        for name, info in branch.items():
+            children = info.get("children") or {}
+            path = [*parent_path, name]
+            tree_context.append({
+                "name": name, "path": path, "purpose": purposes.get(name, ""),
+                "children": list(children),
+                "owned_rule_ids": [] if children else info.get("components", []),
+            })
+            visit(children, path)
+
+    visit(module_tree, [])
     return (
         f"Document the Pega module {module_name}. Create exactly {module_name}.md.\n"
         "The cards identify graph entities and their graph-selected official documents. "
@@ -105,5 +114,5 @@ def module_user_prompt(
         "The listed relationships are directed configuration links, not execution traces.\n\n"
         f"<MODULE_TREE>{json.dumps(tree_context, ensure_ascii=False)}</MODULE_TREE>\n"
         f"<ENTITY_CARDS>{json.dumps(cards, ensure_ascii=False)}</ENTITY_CARDS>\n"
-        f"<DIRECTED_RELATIONSHIPS>{json.dumps(edge_context, ensure_ascii=False)}</DIRECTED_RELATIONSHIPS>"
+        f"<DIRECTED_RELATIONSHIPS>{json.dumps(edges, ensure_ascii=False)}</DIRECTED_RELATIONSHIPS>"
     )

@@ -11,6 +11,7 @@ fi
 set -a
 source "$env_file"
 set +a
+PEGA_RELEASE=${PEGA_RELEASE:-lead}
 
 for variable in CUSTOMER_MODEL_API_KEY CUSTOMER_MODEL_BASE_URL CUSTOMER_MODEL_ID PEGA_PROJECT_ID PEGA_KB_ROOT PEGA_PYTHON; do
   if [[ -z "${!variable:-}" ]]; then

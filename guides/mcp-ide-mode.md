@@ -59,7 +59,7 @@ The generic setup above describes upstream CodeWiki. This fork adds
 `generate_pega_docs` to the MCP tool list. The original tools
 `analyze_repo` and `generate_docs` document source-code repositories; they do
 not query the PEGA knowledge graph. The PEGA tool uses the PEGA Agent's
-`pega-kb-neo4j` MCP service and the configured GPT-compatible model endpoint.
+`pega_kb.mcp_server` MCP service and the configured GPT-compatible model endpoint.
 
 Set the model, project, PEGA Agent repository, and PEGA Python environment in
 the fork's Git-ignored `.env.local`. See

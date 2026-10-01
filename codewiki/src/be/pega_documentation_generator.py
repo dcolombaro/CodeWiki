@@ -136,11 +136,33 @@ class PegaDocumentationGenerator(DocumentationGenerator):
 
     @staticmethod
     def _subtree_names(tree: dict[str, Any], root: str) -> set[str]:
+        if root not in tree:
+            for info in tree.values():
+                if root in PegaDocumentationGenerator._tree_page_names(info.get("children") or {}):
+                    return PegaDocumentationGenerator._subtree_names(info["children"], root)
+            raise KeyError(root)
         info = tree[root]
         names = {root}
         for child in (info.get("children") or {}):
             names.update(PegaDocumentationGenerator._subtree_names(info["children"], child))
         return names
+
+    @staticmethod
+    def _invalidated_pages(tree: dict[str, Any], changed_modules: set[str]) -> set[str]:
+        """A changed leaf invalidates its ancestors and overview, not its siblings."""
+        invalidated: set[str] = set()
+
+        def visit(branch: dict[str, Any], ancestors: list[str]) -> None:
+            for name, info in branch.items():
+                if name in changed_modules:
+                    invalidated.update(ancestors)
+                    invalidated.update(PegaDocumentationGenerator._subtree_names(branch, name))
+                visit(info.get("children") or {}, [*ancestors, name])
+
+        visit(tree, [])
+        if invalidated:
+            invalidated.add("overview")
+        return invalidated
 
     def _prepare_incremental(
         self, package: dict[str, Any], previous_run: Path | None
@@ -298,6 +320,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             "source_kind": "pega",
             "project_id": package["project_id"],
             "modules": validated_previous_plan["modules"],
+            "planning": validated_previous_plan.get("planning", {}),
         }
         try:
             new_tree, new_plan = validate_plan(package, proposal)
@@ -307,13 +330,13 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             new_tree, new_plan = {}, {}
         if new_plan and new_plan["primary_owner"] != validated_previous_plan["primary_owner"]:
             reasons.append("module_ownership_changed")
-        if not isinstance(previous_tree, dict) or set(previous_tree) != set(new_tree):
+        if not isinstance(previous_tree, dict) or previous_tree != new_tree:
             reasons.append("module_tree_changed")
 
         regenerated = set(report["impact_from_before_plan"]["module_names"])
         if report["evidence_changed"] and not regenerated:
             reasons.append("changed_evidence_has_no_module_impact")
-        if not regenerated.issubset(previous_tree):
+        if not regenerated.issubset(self._tree_page_names(previous_tree)):
             reasons.append("impact_module_missing_from_previous_tree")
         required_pages = self._tree_page_names(previous_tree) | {"overview"}
         missing_pages = sorted(
@@ -351,9 +374,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
 
         invalidated: set[str] = set()
         if report["evidence_changed"]:
-            for module_name in regenerated:
-                invalidated.update(self._subtree_names(previous_tree, module_name))
-            invalidated.add("overview")
+            invalidated = self._invalidated_pages(previous_tree, regenerated)
         for name in invalidated:
             (docs_dir / f"{name}.md").unlink(missing_ok=True)
 
@@ -361,6 +382,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             {
                 "applied": True,
                 "regenerated_modules": sorted(regenerated),
+                "regenerated_overviews": sorted(invalidated - regenerated),
                 "reused_modules": sorted(page_names - invalidated),
                 "fallback_reasons": [],
             }
@@ -369,9 +391,19 @@ class PegaDocumentationGenerator(DocumentationGenerator):
 
     def _check_local_links(self, docs_dir: Path) -> None:
         link_pattern = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
+        module_tree = file_manager.load_json(str(docs_dir / MODULE_TREE_FILENAME))
+        leaf_names: set[str] = set()
+
+        def leaves(branch: dict[str, Any]) -> None:
+            for name, info in branch.items():
+                if info.get("children"):
+                    leaves(info["children"])
+                else:
+                    leaf_names.add(name)
+        leaves(module_tree)
         for page in docs_dir.glob("*.md"):
             content = page.read_text(encoding="utf-8")
-            if page.name != OVERVIEW_FILENAME and "../evidence/" not in content:
+            if page.stem in leaf_names and "../evidence/" not in content:
                 raise ValueError(f"Pega module page has no local evidence citation: {page.name}")
             for target in link_pattern.findall(content):
                 path = target.split("#", 1)[0]
@@ -491,7 +523,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             answer = answer.split("<OVERVIEW>", 1)[1].split("</OVERVIEW>", 1)[0]
         if not answer.strip():
             raise RuntimeError(f"Empty Pega overview for {name}")
-        if not module_path and len(child_names) > 8:
+        if child_names:
             index = "\n\n## Module index\n\n" + "\n".join(
                 f"- [{child_name.replace('_', ' ')}]({child_name}.md)" for child_name in child_names
             )
@@ -507,11 +539,47 @@ class PegaDocumentationGenerator(DocumentationGenerator):
         incremental_from: Path | None = None,
         bundle_evidence: bool = False,
         evidence_refresh: dict[str, Any] | None = None,
+        resume_existing: bool = False,
     ) -> Path:
         docs_dir = Path(self.config.docs_dir).resolve()
         docs_dir.mkdir(parents=True, exist_ok=True)
-        if any(docs_dir.iterdir()):
+        if any(docs_dir.iterdir()) and not resume_existing:
             raise ValueError(f"Pega docs directory must be empty: {docs_dir}")
+        resumed_plan: dict[str, Any] | None = None
+        if resume_existing:
+            run_dir = docs_dir.parent
+            previous_package = json.loads(
+                (run_dir / "evidence-package.json").read_text(encoding="utf-8")
+            )
+            if previous_package.get("snapshot_key") != package.get("snapshot_key"):
+                raise ValueError(
+                    "Cannot resume: current graph and Markdown inputs do not match the saved evidence snapshot"
+                )
+            resumed_plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+            expected_tree, resumed_plan = validate_plan(package, resumed_plan)
+            tree_path = docs_dir / MODULE_TREE_FILENAME
+            saved_tree = json.loads(tree_path.read_text(encoding="utf-8"))
+            if stable_json(saved_tree) != stable_json(expected_tree):
+                raise ValueError("Cannot resume: saved module tree does not match the validated evidence plan")
+            expected_pages = self._tree_page_names(saved_tree) | {"overview"}
+            unexpected_pages = sorted(
+                page.stem
+                for page in docs_dir.glob("*.md")
+                if page.stem not in expected_pages
+            )
+            if unexpected_pages:
+                raise ValueError(
+                    "Cannot resume: output contains pages outside the saved module tree: "
+                    + ", ".join(unexpected_pages)
+                )
+            # Finalization appends the source inventory only after all writers
+            # finish. Remove it defensively if a prior interruption happened
+            # during finalization, then re-create it from the verified package.
+            marker = "<!-- codewiki-pega-source-inventory -->"
+            for page in docs_dir.glob("*.md"):
+                body = page.read_text(encoding="utf-8")
+                if marker in body:
+                    page.write_text(body.split(marker, 1)[0].rstrip() + "\n", encoding="utf-8")
         # Capture may have inspected boundary relationships while resolving a
         # slice. Keep planning, writers, and receipts strictly inside the
         # immutable package that defines this run's evidence scope.
@@ -530,6 +598,8 @@ class PegaDocumentationGenerator(DocumentationGenerator):
         self._write_edge_receipts(package.get("relationships") or [], evidence_dir)
         save_evidence_package(package, docs_dir.parent / "evidence-package.json")
         components = self.provider.cached_codewiki_components(package)
+        if resumed_plan is not None:
+            planned_modules = resumed_plan
         if planned_modules is not None and (
             not isinstance(planned_modules, dict)
             or planned_modules.get("snapshot_key") != package["snapshot_key"]
@@ -552,6 +622,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
         if not incremental_state.get("applied"):
             file_manager.save_json(tree, str(docs_dir / FIRST_MODULE_TREE_FILENAME))
             file_manager.save_json(tree, str(docs_dir / MODULE_TREE_FILENAME))
+        self.provider._module_purposes = plan.get("rationale") or {}
         await self.generate_module_documentation(components, sorted(components))
         all_edges = [
             {
@@ -632,7 +703,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
                 key: incremental_state.get(key)
                 for key in (
                     "enabled", "applied", "source_run", "reason", "details",
-                    "fallback_reasons", "regenerated_modules", "reused_modules",
+                    "fallback_reasons", "regenerated_modules", "regenerated_overviews", "reused_modules",
                 )
             },
         }

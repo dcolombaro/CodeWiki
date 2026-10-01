@@ -135,8 +135,16 @@ class ProjectPlannerTests(unittest.TestCase):
         class Backend:
             def __init__(self):
                 self.batch_sizes = []
+                self.global_calls = 0
 
             def complete(self, prompt, model=None):
+                if "<RULE_CATALOG>" in prompt:
+                    self.global_calls += 1
+                    rules = json.loads(prompt.split("<RULE_CATALOG>", 1)[1].split("</RULE_CATALOG>", 1)[0])
+                    return json.dumps({"modules": [{
+                        "name": "Business_Rules", "purpose": "One coherent capability across discovery groups",
+                        "rule_refs": list(rules),
+                    }]})
                 cards = json.loads(prompt.split("<ENTITY_CARDS>\n", 1)[1].split("\n</ENTITY_CARDS>", 1)[0])
                 self.batch_sizes.append(len(cards))
                 return json.dumps({"modules": [{
@@ -164,7 +172,8 @@ class ProjectPlannerTests(unittest.TestCase):
         tree, plan = plan_project_modules(package, Provider(), backend, None)
 
         self.assertEqual(len(plan["primary_owner"]), 60)
-        self.assertEqual(len(tree), len(backend.batch_sizes))
+        self.assertEqual(len(tree), 1)
+        self.assertEqual(backend.global_calls, 1)
         self.assertTrue(all(size > 0 for size in backend.batch_sizes))
         self.assertEqual(sum(backend.batch_sizes), 60)
         self.assertEqual(plan["planning"]["batch_count"], len(backend.batch_sizes))

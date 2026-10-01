@@ -42,6 +42,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     from codewiki.src.config import Config
 
     project = str(arguments.get("project") or _required_env("PEGA_PROJECT_ID"))
+    release = str(arguments.get("release") or os.environ.get("PEGA_RELEASE", "lead"))
     api_key = _required_env("CUSTOMER_MODEL_API_KEY")
     base_url = _required_env("CUSTOMER_MODEL_BASE_URL")
     model = _required_env("CUSTOMER_MODEL_ID")
@@ -55,7 +56,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     if not pega_python.is_file():
         raise ValueError(f"PEGA_PYTHON does not exist: {pega_python}")
 
-    raw_args = os.environ.get("PEGA_MCP_ARGS_JSON", '["-m", "pega_kb.neo4j_mcp"]')
+    raw_args = os.environ.get("PEGA_MCP_ARGS_JSON", '["-m", "pega_kb.mcp_server"]')
     mcp_args = json.loads(raw_args)
     if not isinstance(mcp_args, list) or any(not isinstance(item, str) for item in mcp_args):
         raise ValueError("PEGA_MCP_ARGS_JSON must be a JSON array of strings")
@@ -71,15 +72,19 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     if not 1 <= max_documents <= 500:
         raise ValueError("max_documents must be between 1 and 500")
     relationship_types = arguments.get("relationship_types") or []
+    relation_kinds = arguments.get("relation_kinds") or []
     expand_entity_ids = arguments.get("expand_entity_ids") or []
     replan = bool(arguments.get("replan", False))
     if not isinstance(relationship_types, list) or any(not isinstance(item, str) for item in relationship_types):
         raise ValueError("relationship_types must be an array of strings")
+    if not isinstance(relation_kinds, list) or any(not isinstance(item, str) for item in relation_kinds):
+        raise ValueError("relation_kinds must be an array of strings")
     if not isinstance(expand_entity_ids, list) or any(not isinstance(item, str) for item in expand_entity_ids):
         raise ValueError("expand_entity_ids must be an array of strings")
     if not (seed_id or seed_name) and (
         depth != 1
         or relationship_types
+        or relation_kinds
         or expand_entity_ids
         or max_documents != 40
         or arguments.get("rule_type")
@@ -93,6 +98,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     output = _output_directory(arguments)
     os.environ["MERMAID_VALIDATE"] = "0"
     request = scope_request(
+        release=release,
         seed_id=seed_id,
         seed_name=seed_name,
         rule_type=arguments.get("rule_type"),
@@ -100,6 +106,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
         ruleset=arguments.get("ruleset"),
         depth=depth,
         relationship_types=relationship_types,
+        relation_kinds=relation_kinds,
         expand_entity_ids=expand_entity_ids,
         max_documents=max_documents,
     )
@@ -109,7 +116,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     cache_root = Path(
         os.environ.get("CODEWIKI_PEGA_CACHE_DIR", str(output_root / ".codewiki-pega-cache"))
     ).expanduser()
-    evidence_store = PegaEvidenceStore(cache_root, project)
+    evidence_store = PegaEvidenceStore(cache_root, project, release)
     package_path = output / "evidence-package.json"
 
     async with PegaMCPClient(
@@ -117,6 +124,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     ) as client:
         capture, package, evidence_refresh = await prepare_pega_evidence(
             project=project,
+            release=release,
             client=client,
             source_root=kb_root,
             store=evidence_store,
@@ -127,7 +135,7 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     # was refreshed, reused, or derived from a complete cached project graph.
     save_evidence_package(package, package_path)
     frozen = PegaGraphProvider(
-        None, project=project, cache_dir=capture.cache.root, source_root=kb_root
+        None, project=project, release=release, cache_dir=capture.cache.root, source_root=kb_root
     )
     package = frozen.load_snapshot(package_path)
     config = Config.from_cli(

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
+from copy import deepcopy
 from typing import Any
 
 from codewiki.src.be.module_naming import RESERVED_STEMS, sanitize_module_name
-from codewiki.src.be.pega_prompts import PEGA_PLANNER_PROMPT, PEGA_PROJECT_BATCH_PLANNER_PROMPT
+from codewiki.src.be.pega_prompts import (
+    PEGA_PLANNER_PROMPT, PEGA_PROJECT_BATCH_PLANNER_PROMPT,
+    PEGA_PROJECT_RECONCILIATION_PROMPT,
+)
 from codewiki.src.be.sources.pega_mcp import PegaGraphProvider
 from codewiki.src.be.utils import count_tokens
 
@@ -29,7 +33,7 @@ def _planner_cards(
             document = provider.cache.get_document(document_id)
             if document is None:
                 continue
-            for heading in ("Functional synthesis", "Extracted configuration"):
+            for heading in ("Functional synthesis", "Extracted configuration", "Configurazione"):
                 try:
                     section_text, line = document.section(heading)
                     card["semantic_section_text"] = section_text
@@ -38,6 +42,8 @@ def _planner_cards(
                     card["semantic_authority"] = (
                         "upstream_llm_interpretation"
                         if heading == "Functional synthesis"
+                        else "deterministic_extraction"
+                        if heading == "Configurazione"
                         else "extracted_configuration"
                     )
                     break
@@ -224,10 +230,114 @@ def _project_batches(
     return batches
 
 
+def _reconcile_project_modules(
+    package: dict[str, Any], candidates: list[dict[str, Any]],
+    backend: Any, cluster_model: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Reassign ownership globally; discovery batch boundaries have no authority."""
+    owners = documented_rule_ids(package)
+    entities = {entity["id"]: entity for entity in package["entities"]}
+    owner_refs = {entity_id: f"R{index:04d}" for index, entity_id in enumerate(sorted(owners), 1)}
+    context_refs = {
+        entity_id: f"C{index:04d}"
+        for index, entity_id in enumerate(sorted(entities.keys() - owners), 1)
+    }
+    refs = {**owner_refs, **context_refs}
+
+    def catalog(selected: dict[str, str]) -> dict[str, Any]:
+        return {
+            ref: {
+                key: entities[entity_id].get(key)
+                for key in ("name", "rule_type", "class_name", "ruleset", "is_external", "is_embedded")
+            }
+            for entity_id, ref in selected.items()
+        }
+
+    relations: Counter = Counter()
+    for edge in package.get("relationships") or []:
+        source, target = edge["source_entity_id"], edge["target_entity_id"]
+        properties = edge.get("properties") or {}
+        relations[(
+            refs[source], refs[target], edge["relationship_type"],
+            str(properties.get("relation_kind") or ""),
+            str(properties.get("resolution_outcome") or ""),
+        )] += 1
+    prompt = PEGA_PROJECT_RECONCILIATION_PROMPT.format(
+        project=package["project_id"],
+        rules=json.dumps(catalog(owner_refs), ensure_ascii=False),
+        context=json.dumps(catalog(context_refs), ensure_ascii=False),
+        candidates=json.dumps([
+            {"name": item["name"], "purpose": item["purpose"],
+             "rule_refs": [owner_refs[entity_id] for entity_id in item["entity_ids"]]}
+            for item in candidates
+        ], ensure_ascii=False),
+        relationships=json.dumps([
+            {"source": key[0], "target": key[1], "type": key[2],
+             "relation_kind": key[3], "resolution_outcome": key[4], "count": count}
+            for key, count in sorted(relations.items())
+        ], ensure_ascii=False),
+    )
+    ids_by_ref = {ref: entity_id for entity_id, ref in owner_refs.items()}
+
+    def expand(items: Any) -> list[dict[str, Any]]:
+        if not isinstance(items, list):
+            raise ValueError("Reconciled modules/children must be a list")
+        expanded = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("A reconciled module must be an object")
+            module = {"name": item.get("name"), "purpose": item.get("purpose")}
+            if item.get("children"):
+                if item.get("rule_refs") or item.get("entity_ids"):
+                    raise ValueError("Only leaves may own rules; parent pages summarize children")
+                module["children"] = expand(item["children"])
+            else:
+                rule_refs = item.get("rule_refs")
+                if not isinstance(rule_refs, list):
+                    raise ValueError("A leaf must supply rule_refs")
+                unknown = [ref for ref in rule_refs if not isinstance(ref, str) or ref not in ids_by_ref]
+                if unknown:
+                    raise ValueError(f"Unknown or context-only owner refs: {unknown}")
+                module["entity_ids"] = [ids_by_ref[ref] for ref in rule_refs]
+            expanded.append(module)
+        return expanded
+
+    errors: list[str] = []
+    for attempt in range(2):
+        feedback = (
+            "\nYour previous proposal failed validation. Return a complete corrected hierarchy. "
+            "Validation error (IDs map to refs in RULE_CATALOG): " + errors[-1]
+            if errors else ""
+        )
+        answer = backend.complete(prompt + feedback, model=cluster_model)
+        if not isinstance(answer, str) or not answer.strip():
+            raise RuntimeError("Project reconciliation returned an empty response")
+        cleaned = answer.strip()
+        if cleaned.startswith("```json") and cleaned.endswith("```"):
+            cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
+        try:
+            proposed = json.loads(cleaned)
+            if not isinstance(proposed, dict):
+                raise ValueError("Project reconciliation must return an object")
+            tree, plan = validate_plan(package, {"modules": expand(proposed.get("modules"))})
+            return tree, plan, {
+                "global_prompt_tokens": count_tokens(prompt),
+                "reconciliation_attempts": attempt + 1,
+                "reconciliation_validation_errors": errors,
+            }
+        except (ValueError, KeyError) as exc:
+            message = str(exc)
+            for ref, entity_id in ids_by_ref.items():
+                message = message.replace(entity_id, ref)
+            errors.append(message)
+    raise ValueError("Project hierarchy failed validation; page generation stopped: " + errors[-1])
+
+
 def plan_project_modules(
     package: dict[str, Any], provider: PegaGraphProvider, backend: Any, cluster_model: str | None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Plan a complete project by ruleset/class groups and validate exact ownership."""
+    """Discover capabilities in batches, then reconcile a hierarchy across the project."""
+    usage_start = len(getattr(backend, "usage_events", []))
     prompt_token_target = int(
         getattr(getattr(backend, "_config", None), "max_token_per_module", 36_369)
     )
@@ -281,13 +391,19 @@ def plan_project_modules(
                 index += 1
             used_names.add(candidate.casefold())
             proposed_modules.append({**module, "name": candidate})
-    tree, plan = validate_plan(package, {"modules": proposed_modules})
+    tree, plan, reconciliation = _reconcile_project_modules(
+        package, proposed_modules, backend, cluster_model
+    )
     plan["planning"] = {
-        "mode": "ruleset_class_groups",
+        "mode": "global_capability_hierarchy",
+        "discovery_batching": "ruleset_class_groups",
         "batch_count": len(batches),
         "rule_counts_by_batch": [len(batch) for batch in batches],
         "prompt_token_target": prompt_token_target,
         "fallback_batches": fallback_batches,
+        "provisional_modules": proposed_modules,
+        "model_calls": deepcopy(getattr(backend, "usage_events", [])[usage_start:]),
+        **reconciliation,
     }
     return tree, plan
 
@@ -311,42 +427,65 @@ def validate_plan(
         rationale_map = proposed.get("rationale") or {}
         if not isinstance(rationale_map, dict):
             raise ValueError("Pega plan rationale must be an object")
-        modules = [
-            {
-                "name": name,
-                "purpose": rationale_map.get(name, ""),
-                "entity_ids": info.get("components") if isinstance(info, dict) else None,
-            }
-            for name, info in proposed["module_tree"].items()
-        ]
+        def from_tree(branch: dict[str, Any]) -> list[dict[str, Any]]:
+            result = []
+            for name, info in branch.items():
+                item = {"name": name, "purpose": rationale_map.get(name, "")}
+                if isinstance(info, dict) and info.get("children"):
+                    item["children"] = from_tree(info["children"])
+                else:
+                    item["entity_ids"] = info.get("components") if isinstance(info, dict) else None
+                result.append(item)
+            return result
+        modules = from_tree(proposed["module_tree"])
     if not isinstance(modules, list):
         raise ValueError("Pega planner must return a JSON object with modules")
     scope_ids = documented_rule_ids(package)
-    tree: dict[str, Any] = {}
     ownership: dict[str, str] = {}
     rationale: dict[str, str] = {}
-    canonical_modules: list[dict[str, Any]] = []
-    for item in modules:
-        if not isinstance(item, dict) or not isinstance(item.get("entity_ids"), list):
-            raise ValueError("Every Pega module needs an entity_ids list")
-        requested_name = str(item.get("name") or "")
-        name = sanitize_module_name(requested_name)
-        if name != requested_name or name.casefold() in {key.casefold() for key in tree} or name.casefold() in RESERVED_STEMS:
-            raise ValueError(f"Unsafe or duplicate Pega module name: {requested_name!r}")
-        ids = item["entity_ids"]
-        if not ids:
-            raise ValueError(f"Pega module {name} is empty")
-        for entity_id in ids:
-            if entity_id not in scope_ids:
-                raise ValueError(f"Unknown or unsupported Pega owner ID: {entity_id!r}")
-            if entity_id in ownership:
-                raise ValueError(f"Pega rule {entity_id} has two owners")
-            ownership[entity_id] = name
-        tree[name] = {"components": ids, "children": {}}
-        rationale[name] = str(item.get("purpose") or "")
-        canonical_modules.append(
-            {"name": name, "purpose": rationale[name], "entity_ids": list(ids)}
-        )
+    used_names: set[str] = set()
+    module_paths: dict[str, list[str]] = {}
+
+    def visit(items: list[dict[str, Any]], path: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        tree: dict[str, Any] = {}
+        canonical: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("Every Pega module must be an object")
+            requested_name = str(item.get("name") or "")
+            name = sanitize_module_name(requested_name)
+            if name != requested_name or name.casefold() in used_names or name.casefold() in RESERVED_STEMS:
+                raise ValueError(f"Unsafe or duplicate Pega module name: {requested_name!r}")
+            used_names.add(name.casefold())
+            rationale[name] = str(item.get("purpose") or "")
+            module_paths[name] = [*path, name]
+            children = item.get("children", [])
+            if not isinstance(children, list):
+                raise ValueError(f"Pega module {name} children must be a list")
+            if children:
+                if item.get("entity_ids"):
+                    raise ValueError(f"Parent module {name} cannot own rules as well as children")
+                child_tree, canonical_children = visit(children, [*path, name])
+                # Parent components are a rollup for shared CodeWiki machinery;
+                # primary ownership always remains at the leaves.
+                ids = [entity_id for info in child_tree.values() for entity_id in info["components"]]
+                canonical.append({"name": name, "purpose": rationale[name], "children": canonical_children})
+            else:
+                ids = item.get("entity_ids")
+                if not isinstance(ids, list) or not ids:
+                    raise ValueError(f"Pega leaf module {name} needs a nonempty entity_ids list")
+                for entity_id in ids:
+                    if not isinstance(entity_id, str) or entity_id not in scope_ids:
+                        raise ValueError(f"Unknown or unsupported Pega owner ID: {entity_id!r}")
+                    if entity_id in ownership:
+                        raise ValueError(f"Pega rule {entity_id} has two owners")
+                    ownership[entity_id] = name
+                child_tree = {}
+                canonical.append({"name": name, "purpose": rationale[name], "entity_ids": list(ids)})
+            tree[name] = {"components": list(ids), "children": child_tree}
+        return tree, canonical
+
+    tree, canonical_modules = visit(modules, [])
     missing = sorted(scope_ids - ownership.keys())
     if missing:
         raise ValueError(f"Pega planner omitted {len(missing)} documented rules: {missing}")
@@ -363,6 +502,7 @@ def validate_plan(
         "scope_rule_ids": sorted(scope_ids),
         "primary_owner": ownership,
         "rationale": rationale,
+        "module_paths": module_paths,
         "modules": canonical_modules,
         "excluded_rule_ids": [],
         "supporting_entities": {
@@ -380,4 +520,6 @@ def validate_plan(
         },
         "module_tree": tree,
     }
+    if isinstance(proposed.get("planning"), dict):
+        plan["planning"] = deepcopy(proposed["planning"])
     return tree, plan

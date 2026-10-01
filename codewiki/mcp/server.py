@@ -388,6 +388,11 @@ def _pega_generation_tool() -> Tool:
                     "type": "string",
                     "description": "PEGA project ID; defaults to PEGA_PROJECT_ID from the MCP environment",
                 },
+                "release": {
+                    "type": "string",
+                    "default": "lead",
+                    "description": "Application release slug or ID; defaults to lead. Generate leadtest separately so duplicated rules are not counted twice.",
+                },
                 "seed_name": {
                     "type": "string",
                     "description": "Exact PEGA entity name for a focused activity/workflow/documentation request",
@@ -409,7 +414,12 @@ def _pega_generation_tool() -> Tool:
                 "relationship_types": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional edge types to follow; omitted means follow all domain relationship types",
+                    "description": "Optional Neo4j edge types to follow (CALLS, READS, WRITES, or a structural type)",
+                },
+                "relation_kinds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional Pega relation_kind values to follow, e.g. CALLS_ACTIVITY or RUNS_DATA_TRANSFORM",
                 },
                 "expand_entity_ids": {
                     "type": "array",

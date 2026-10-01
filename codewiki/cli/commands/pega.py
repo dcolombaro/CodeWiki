@@ -47,6 +47,7 @@ async def _resolve_seed(
 
 @click.command("pega-snapshot")
 @click.option("--project", required=True, help="Exact ID from PEGA projects/projects.yaml")
+@click.option("--release", default="lead", show_default=True, help="Application release slug or ID; leadtest is a separate capture")
 @click.option("--mcp-command", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--mcp-arg", multiple=True, help="Repeat for each server argument, e.g. --mcp-arg=-m")
 @click.option("--mcp-cwd", required=True, type=click.Path(exists=True, file_okay=False))
@@ -56,12 +57,14 @@ async def _resolve_seed(
 @click.option("--class-name", help="Optional Applies-To class filter for --seed-name")
 @click.option("--ruleset", help="Optional ruleset filter for --seed-name")
 @click.option("--relationship-type", multiple=True, help="Repeat for each traversed edge type")
+@click.option("--relation-kind", multiple=True, help="Repeat for Pega relation_kind values such as CALLS_ACTIVITY")
 @click.option("--expand-entity-id", multiple=True, help="Expand one selected branch by one further edge")
 @click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True, help="Focused slice only")
 @click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True, help="Focused slice only")
 @click.option("--output", required=True, type=click.Path(path_type=Path))
 def pega_snapshot_command(
     project: str,
+    release: str,
     mcp_command: str,
     mcp_arg: tuple[str, ...],
     mcp_cwd: str,
@@ -71,6 +74,7 @@ def pega_snapshot_command(
     class_name: str | None,
     ruleset: str | None,
     relationship_type: tuple[str, ...],
+    relation_kind: tuple[str, ...],
     expand_entity_id: tuple[str, ...],
     depth: int,
     max_documents: int,
@@ -80,7 +84,7 @@ def pega_snapshot_command(
     if seed_id and seed_name:
         raise click.UsageError("Provide at most one of --seed-id or --seed-name")
     if not (seed_id or seed_name) and any(
-        (rule_type, class_name, ruleset, relationship_type, expand_entity_id, depth != 1, max_documents != 40)
+        (rule_type, class_name, ruleset, relationship_type, relation_kind, expand_entity_id, depth != 1, max_documents != 40)
     ):
         raise click.UsageError("Seed, depth, relationship, and document-limit options require --seed-id or --seed-name")
     output = output.resolve()
@@ -92,6 +96,7 @@ def pega_snapshot_command(
             provider = PegaGraphProvider(
                 client,
                 project=project,
+                release=release,
                 cache_dir=output / "evidence",
                 source_root=Path(mcp_cwd),
             )
@@ -109,6 +114,7 @@ def pega_snapshot_command(
                     seed_entity_id=resolved_id,
                     depth=depth,
                     relationship_types=list(relationship_type) or None,
+                    relation_kinds=list(relation_kind) or None,
                     expand_entity_ids=list(expand_entity_id),
                     max_documents=max_documents,
                 )
@@ -242,6 +248,7 @@ def pega_compare_command(
 
 @click.command("pega-generate")
 @click.option("--project", required=True, help="Exact ID from PEGA projects/projects.yaml")
+@click.option("--release", default="lead", show_default=True, help="Application release slug or ID; leadtest is a separate wiki")
 @click.option("--snapshot-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), help="Replay exact saved evidence without live MCP retrieval")
 @click.option("--mcp-command", type=click.Path(exists=True, dir_okay=False))
 @click.option("--mcp-arg", multiple=True)
@@ -252,6 +259,7 @@ def pega_compare_command(
 @click.option("--class-name")
 @click.option("--ruleset")
 @click.option("--relationship-type", multiple=True)
+@click.option("--relation-kind", multiple=True, help="Pega relation_kind values to follow, e.g. CALLS_ACTIVITY")
 @click.option("--expand-entity-id", multiple=True, help="Expand one selected branch by one further edge")
 @click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True, help="Focused slice only")
 @click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True, help="Focused slice only")
@@ -280,9 +288,15 @@ def pega_compare_command(
     is_flag=True,
     help="Reuse current evidence but re-run planning and all page writers",
 )
+@click.option(
+    "--resume-existing",
+    is_flag=True,
+    help="Resume an interrupted live run after verifying its evidence snapshot and plan",
+)
 @click.option("--output", required=True, type=click.Path(path_type=Path))
 def pega_generate_command(
     project: str,
+    release: str,
     snapshot_dir: Path | None,
     mcp_command: str | None,
     mcp_arg: tuple[str, ...],
@@ -293,6 +307,7 @@ def pega_generate_command(
     class_name: str | None,
     ruleset: str | None,
     relationship_type: tuple[str, ...],
+    relation_kind: tuple[str, ...],
     expand_entity_id: tuple[str, ...],
     depth: int,
     max_documents: int,
@@ -305,11 +320,12 @@ def pega_generate_command(
     bundle_evidence: bool,
     cache_dir: Path | None,
     replan: bool,
+    resume_existing: bool,
     output: Path,
 ) -> None:
     """Generate an evidence-linked wiki for a Pega project or focused slice."""
     if snapshot_dir is not None:
-        if any((seed_id, seed_name, rule_type, class_name, ruleset, mcp_command, mcp_arg, mcp_cwd, relationship_type, expand_entity_id)):
+        if any((seed_id, seed_name, rule_type, class_name, ruleset, mcp_command, mcp_arg, mcp_cwd, relationship_type, relation_kind, expand_entity_id)):
             raise click.UsageError(
                 "--snapshot-dir cannot be combined with live MCP or seed options"
             )
@@ -318,7 +334,7 @@ def pega_generate_command(
             "Live generation requires --mcp-command and --mcp-cwd; provide at most one seed"
         )
     if snapshot_dir is None and not (seed_id or seed_name) and any(
-        (rule_type, class_name, ruleset, relationship_type, expand_entity_id, depth != 1, max_documents != 40)
+        (rule_type, class_name, ruleset, relationship_type, relation_kind, expand_entity_id, depth != 1, max_documents != 40)
     ):
         raise click.UsageError("Seed, depth, relationship, and document-limit options require --seed-id or --seed-name")
     if incremental_from is not None and plan_file is not None:
@@ -328,6 +344,11 @@ def pega_generate_command(
         )
     if replan and incremental_from is not None:
         raise click.UsageError("--replan cannot be combined with --incremental-from")
+    if resume_existing and any((snapshot_dir, incremental_from, plan_file, replan, bundle_evidence)):
+        raise click.UsageError(
+            "--resume-existing requires live evidence and the run's existing plan; "
+            "do not combine it with snapshot, incremental, plan, replan, or bundled-evidence options"
+        )
     api_key = os.environ.get(api_key_env)
     if not api_key:
         raise click.ClickException(f"API key variable {api_key_env} is unset")
@@ -345,8 +366,10 @@ def pega_generate_command(
         else cache_base / ".codewiki-pega-cache"
     )
     configured_cache = configured_cache.expanduser().resolve()
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+    if output.exists() and (not output.is_dir() or (any(output.iterdir()) and not resume_existing)):
         raise click.ClickException(f"Output directory must be empty: {output}")
+    if resume_existing and not output.is_dir():
+        raise click.ClickException(f"Cannot resume; output directory does not exist: {output}")
     # The Pega run does not send diagrams to CodeWiki's default remote renderer.
     os.environ["MERMAID_VALIDATE"] = "0"
 
@@ -360,6 +383,7 @@ def pega_generate_command(
             source_path: str,
             evidence_refresh: dict | None = None,
             previous_run: Path | None = None,
+            resume_existing: bool = False,
         ) -> Path:
             config = Config.from_cli(
                 repo_path=source_path,
@@ -377,19 +401,24 @@ def pega_generate_command(
             config.pega_project_id = project
             config.pega_snapshot_key = package["snapshot_key"]
             generator = PegaDocumentationGenerator(config, provider)
-            planned_modules = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file else None
+            planned_modules = (
+                json.loads((output / "plan.json").read_text(encoding="utf-8"))
+                if resume_existing
+                else (json.loads(plan_file.read_text(encoding="utf-8")) if plan_file else None)
+            )
             return await generator.run_pega(
                 package,
                 planned_modules,
                 incremental_from=previous_run,
                 bundle_evidence=bundle_evidence,
                 evidence_refresh=evidence_refresh,
+                resume_existing=resume_existing,
             )
 
         if snapshot_dir is not None:
             captured_dir = snapshot_dir.resolve()
             captured = PegaGraphProvider(
-                None, project=project, cache_dir=captured_dir / "evidence"
+                None, project=project, release=release, cache_dir=captured_dir / "evidence"
             )
             package = captured.load_snapshot(captured_dir / "evidence-package.json")
             return await write_pages(
@@ -398,12 +427,14 @@ def pega_generate_command(
                 str(captured_dir),
                 {"decision": "saved_evidence_replay"},
                 incremental_from,
+                resume_existing,
             )
 
         assert mcp_command is not None and mcp_cwd is not None
         from codewiki.src.be.pega_refresh import PegaEvidenceStore, prepare_pega_evidence, scope_request
 
         request = scope_request(
+            release=release,
             seed_id=seed_id,
             seed_name=seed_name,
             rule_type=rule_type,
@@ -411,15 +442,17 @@ def pega_generate_command(
             ruleset=ruleset,
             depth=depth,
             relationship_types=list(relationship_type),
+            relation_kinds=list(relation_kind),
             expand_entity_ids=list(expand_entity_id),
             max_documents=max_documents,
         )
-        evidence_store = PegaEvidenceStore(configured_cache, project)
+        evidence_store = PegaEvidenceStore(configured_cache, project, release)
         async with PegaMCPClient(
             mcp_command, list(mcp_arg), cwd=mcp_cwd, exclude_env={api_key_env}
         ) as client:
             provider, package, evidence_refresh = await prepare_pega_evidence(
                 project=project,
+                release=release,
                 client=client,
                 source_root=Path(mcp_cwd),
                 store=evidence_store,
@@ -427,7 +460,7 @@ def pega_generate_command(
             )
             previous_run = (
                 None
-                if replan or plan_file
+                if replan or plan_file or resume_existing
                 else (incremental_from or evidence_store.latest_run(request))
             )
             docs_path = await write_pages(
@@ -436,6 +469,7 @@ def pega_generate_command(
                 mcp_cwd,
                 evidence_refresh,
                 previous_run,
+                resume_existing,
             )
             evidence_store.record_run(request, output)
             return docs_path

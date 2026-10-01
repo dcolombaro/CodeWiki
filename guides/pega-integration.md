@@ -167,6 +167,9 @@ PEGA_PYTHON='/absolute/path/to/pega-kb-codex-GTLLife-bundle/.venv/bin/python'
 CODEWIKI_PEGA_CACHE_DIR='runs/.codewiki-pega-cache'
 # Optional focused request; leave the seed empty for the whole project.
 # PEGA_SEED_ID='project-prefixed-graph-entity-id'
+# Optional: select functional documentation and a reader audience.
+PEGA_DOC_TYPE='functional'
+PEGA_INSTRUCTIONS='Write for business analysts.'
 ```
 
 The helper checks the live revision, uses the reviewed plan when
@@ -198,8 +201,21 @@ codewiki pega-generate \
   --model "$CUSTOMER_MODEL_ID" \
   --model-base-url "$CUSTOMER_MODEL_BASE_URL" \
   --api-key-env CUSTOMER_MODEL_API_KEY \
+  --doc-type functional \
+  --instructions "Write for business analysts" \
   --output runs/pega-wiki-live
 ```
+
+`functional` organizes the wiki around configured business capabilities,
+conditions, decisions, outcomes, and exceptions. Routine Pega step numbers,
+clipboard fields, class names, and rule inventories are summarized in the
+main narrative; exact source traceability remains in citations and inventories.
+The other PEGA types are `api`, `architecture`, `user-guide`, and `developer`.
+`user-guide` is for documented user tasks, so it should not be used to infer
+screens or instructions absent from the KB. The `--instructions` option can
+name a more specific reader audience. Both controls reach discovery,
+project-wide reconciliation, leaf writers, and parent overviews. A style change
+forces a new plan and pages while reusing compatible captured evidence.
 
 Add seed, depth, relationship, and branch expansion options only for a focused
 slice. Matching previous wiki pages are reused automatically. Use `--replan`
@@ -231,8 +247,10 @@ PEGA Agent Markdown plus small JSON metadata records. A fresh capture reads
 each selected file through MCP and compares its content hash with the local
 source before linking it; subsequent matching runs reuse those hashes and
 links. The shared evidence cache and generated runs keep links and metadata
-rather than Markdown copies. Each leaf page receives a deterministic inventory
-of its owned rules and outgoing edges. The
+rather than Markdown copies. Each leaf receives a deterministic inventory
+of its owned rules and outgoing edges. For `--doc-type functional`, the inventory
+is a linked page under `evidence/inventories/`; other styles append it to the
+leaf chapter. The
 manifest records evidence storage mode, evidence section reads, and returned
 hashes. The writer checks rule ownership, required pages, local citations, and
 local links.
@@ -241,8 +259,9 @@ remains in Markdown. The command also writes `index.html` at the run root. This
 local viewer renders the module pages, official documents, and directed
 relationship receipts as a navigable wiki. It bundles the rendered content in
 the HTML file. The Documentation navigation follows the capability hierarchy;
-official sources and relationship receipts are grouped in a separate, collapsed
-Evidence section. Receipts support citations and are not module chapters.
+official sources, relationship receipts, and functional module inventories are
+grouped in a separate, collapsed Evidence section. Receipts support citations
+and are not module chapters.
 The viewer copies a pinned Mermaid browser bundle into `assets/` to render
 diagrams locally. Official Markdown is fetched from `evidence/` only when its
 viewer page is opened, then checked against the captured hash. The viewer makes
@@ -310,22 +329,8 @@ reuse pages from that regenerated baseline.
 The evidence cache lives under `CODEWIKI_PEGA_CACHE_DIR` (default
 `runs/.codewiki-pega-cache`). Use `--replan` to reuse the current package but
 rerun planning and all writers; the chat tool accepts `replan=true`. To inspect
-a change report separately, capture evidence manually and then:
-
-```bash
-codewiki pega-compare \
-  --project "$PEGA_PROJECT_ID" \
-  --before-dir runs/pega-evidence \
-  --after-dir runs/pega-evidence-refreshed \
-  --before-plan runs/pega-plan/plan.json \
-  --output runs/pega-evidence-comparison.json
-```
-
-The comparison reports changed document bodies or metadata, entities, directed
-edges and qualifiers, and existing module owners affected. It labels a
-changed selection as `scope_change`; the same selection is
-`evidence_refresh`. Older snapshots without metadata hashes still compare
-Markdown hashes and manifest fields; the report records metadata-hash coverage.
-A diff is evidence bookkeeping, so review the regenerated pages and citations
-to establish that the wiki reflects the change. Upstream corpus verification
-is a separate gate from retrieval readiness of a restored dump.
+Each refresh records evidence changes, affected modules, reused pages, and any
+fallback reason in the run `evidence-manifest.json`. Review regenerated pages
+and citations to establish that the wiki reflects those changes. Upstream
+corpus verification remains a separate gate from retrieval readiness of a
+restored dump.

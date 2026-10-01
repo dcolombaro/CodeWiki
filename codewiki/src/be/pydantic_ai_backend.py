@@ -26,6 +26,7 @@ from codewiki.src.be.agent_tools.str_replace_editor import str_replace_editor_to
 from codewiki.src.be.backend import AgentReply, LLMBackend, usage_to_dict
 from codewiki.src.be.dependency_analyzer.models.core import Node
 from codewiki.src.be.llm_services import call_llm, create_fallback_models, pop_last_usage
+from codewiki.src.be.pega_prompts import pega_documentation_brief
 from codewiki.src.be.utils import is_complex_module
 from codewiki.src.config import MODULE_TREE_FILENAME, OVERVIEW_FILENAME, Config
 from codewiki.src.utils import file_manager
@@ -51,7 +52,11 @@ class PydanticAIBackend(LLMBackend):
     def __init__(self, config: Config) -> None:
         self._config = config
         self._fallback_models = create_fallback_models(config)
-        self._custom_instructions = config.get_prompt_addition()
+        self._custom_instructions = (
+            pega_documentation_brief(config)
+            if config.source_kind == "pega"
+            else config.get_prompt_addition()
+        )
         self.last_usage: dict[str, Any] | None = None
         self.usage_events: list[dict[str, Any]] = []
         self.pega_provider = None
@@ -136,6 +141,7 @@ class PydanticAIBackend(LLMBackend):
             custom_instructions=self._custom_instructions,
             delegation_tool=generate_sub_module_documentation_tool,
             pega_specialist_enabled=self.pega_provider is not None,
+            doc_type=config.doc_type,
         )
         agent = Agent(
             self._fallback_models,

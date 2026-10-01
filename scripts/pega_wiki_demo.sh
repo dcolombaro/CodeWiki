@@ -8,9 +8,13 @@ if [[ ! -f "$env_file" ]]; then
   exit 2
 fi
 
+doc_type_override=${PEGA_DOC_TYPE:-}
+instructions_override=${PEGA_INSTRUCTIONS:-}
 set -a
 source "$env_file"
 set +a
+if [[ -n "$doc_type_override" ]]; then PEGA_DOC_TYPE=$doc_type_override; fi
+if [[ -n "$instructions_override" ]]; then PEGA_INSTRUCTIONS=$instructions_override; fi
 for variable in CUSTOMER_MODEL_API_KEY CUSTOMER_MODEL_BASE_URL CUSTOMER_MODEL_ID PEGA_PROJECT_ID PEGA_KB_ROOT PEGA_PYTHON; do
   if [[ -z "${!variable:-}" ]]; then
     printf '%s is missing from %s.\n' "$variable" "$env_file" >&2
@@ -56,6 +60,12 @@ if [[ -n "${PEGA_CACHE_DIR:-}" ]]; then
 fi
 if [[ -n "${PEGA_PLAN_FILE:-}" ]]; then
   arguments+=(--plan-file "$PEGA_PLAN_FILE")
+fi
+if [[ -n "${PEGA_DOC_TYPE:-}" ]]; then
+  arguments+=(--doc-type "$PEGA_DOC_TYPE")
+fi
+if [[ -n "${PEGA_INSTRUCTIONS:-}" ]]; then
+  arguments+=(--instructions "$PEGA_INSTRUCTIONS")
 fi
 
 exec "$codewiki_bin" "${arguments[@]}"

@@ -13,7 +13,10 @@ from typing import Any
 from codewiki.src.be.documentation_generator import DocumentationGenerator, IncompleteDocumentationError
 from codewiki.src.be.pydantic_ai_backend import PydanticAIBackend
 from codewiki.src.be.pega_planner import documented_rule_ids, plan_modules, plan_project_modules, validate_plan
-from codewiki.src.be.pega_prompts import PEGA_OVERVIEW_PROMPT, PEGA_PROMPT_VERSION
+from codewiki.src.be.pega_prompts import (
+    PEGA_OVERVIEW_PROMPT, PEGA_PROMPT_VERSION,
+    pega_documentation_brief, pega_documentation_profile,
+)
 from codewiki.src.be.sources.evidence import digest, stable_json
 from codewiki.src.be.sources.pega_diff import compare_evidence_packages
 from codewiki.src.be.sources.pega_mcp import PegaGraphProvider, save_evidence_package
@@ -216,6 +219,9 @@ class PegaDocumentationGenerator(DocumentationGenerator):
                 and (previous_manifest.get("implementation") or {}).get("source_hashes")
                 == _implementation_identity().get("source_hashes")
                 and previous_manifest.get("model") == current_model
+                and (previous_manifest.get("documentation_profile") or {
+                    "doc_type": "default", "instructions": ""
+                }) == pega_documentation_profile(self.config)
             )
             artifact_hashes_match = (
                 artifacts.get("plan_sha256") == digest(previous_plan_path.read_text(encoding="utf-8"))
@@ -301,6 +307,10 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             reasons.append("changed_entities_have_no_previous_module_owner")
         if previous_manifest.get("prompt_version") != PEGA_PROMPT_VERSION:
             reasons.append("prompt_version_changed")
+        if (previous_manifest.get("documentation_profile") or {
+            "doc_type": "default", "instructions": ""
+        }) != pega_documentation_profile(self.config):
+            reasons.append("documentation_profile_changed")
         previous_implementation = previous_manifest.get("implementation") or {}
         current_implementation = _implementation_identity()
         if previous_implementation.get("source_hashes") != current_implementation.get("source_hashes"):
@@ -401,9 +411,11 @@ class PegaDocumentationGenerator(DocumentationGenerator):
                 else:
                     leaf_names.add(name)
         leaves(module_tree)
-        for page in docs_dir.glob("*.md"):
+        inventory_dir = docs_dir.parent / "evidence" / "inventories"
+        pages = list(docs_dir.glob("*.md")) + list(inventory_dir.glob("*.md"))
+        for page in pages:
             content = page.read_text(encoding="utf-8")
-            if page.stem in leaf_names and "../evidence/" not in content:
+            if page.parent == docs_dir and page.stem in leaf_names and "../evidence/" not in content:
                 raise ValueError(f"Pega module page has no local evidence citation: {page.name}")
             for target in link_pattern.findall(content):
                 path = target.split("#", 1)[0]
@@ -434,8 +446,15 @@ class PegaDocumentationGenerator(DocumentationGenerator):
         package: dict[str, Any],
         plan: dict[str, Any],
     ) -> None:
-        """Account for every owned rule and source edge in its module page."""
+        """Account for every owned rule and source edge, with a compact functional page."""
         entities = {entity["id"]: entity for entity in package["entities"]}
+        functional = pega_documentation_profile(self.config)["doc_type"] == "functional"
+        inventory_dir = docs_dir.parent / "evidence" / "inventories"
+        if inventory_dir.is_dir():
+            for previous_inventory in inventory_dir.glob("*.md"):
+                previous_inventory.unlink()
+        if functional:
+            inventory_dir.mkdir(parents=True, exist_ok=True)
         owners: dict[str, list[str]] = {}
         for entity_id, module_name in plan["primary_owner"].items():
             owners.setdefault(module_name, []).append(entity_id)
@@ -448,10 +467,11 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             if marker in body:
                 raise ValueError(f"Writer inserted the reserved source inventory marker in {page_path}")
             lines = [marker, "", "## Source inventory", "", "### Owned rules", ""]
+            evidence_prefix = ".." if functional else "../evidence"
             for entity_id in sorted(entity_ids):
                 entity = entities[entity_id]
                 document_links = [
-                    f"[official document](../evidence/{self.provider.cache.markdown_path(document_id).name})"
+                    f"[official document]({evidence_prefix}/{self.provider.cache.markdown_path(document_id).name})"
                     for document_id in entity["document_ids"]
                     if document_id in package["documents"]
                 ]
@@ -476,13 +496,26 @@ class PegaDocumentationGenerator(DocumentationGenerator):
                     for key in ("http_method", "step_path", "resolution_outcome")
                     if edge["properties"].get(key) not in (None, "")
                 )
-                receipt = f"../evidence/edges/{digest(edge['id'])[:24]}.md"
+                receipt = f"{evidence_prefix}/edges/{digest(edge['id'])[:24]}.md"
                 suffix = f" ({qualifiers})" if qualifiers else ""
                 lines.append(
                     f"- `{edge['source_entity_id']}` — `{edge['relationship_type']}` → "
                     f"`{edge['target_entity_id']}`: [edge receipt]({receipt}){suffix}"
                 )
-            page_path.write_text(body.rstrip() + "\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
+            if functional:
+                inventory_path = inventory_dir / f"{module_name}.md"
+                inventory_path.write_text(
+                    f"# {module_name.replace('_', ' ')} source inventory\n\n"
+                    + "\n".join(lines[3:]) + "\n",
+                    encoding="utf-8",
+                )
+                appendix = (
+                    f"{marker}\n\n[Source inventory](../evidence/inventories/{module_name}.md) "
+                    "lists the owned rules, official documents, and directed relationships.\n"
+                )
+                page_path.write_text(body.rstrip() + "\n\n" + appendix, encoding="utf-8")
+            else:
+                page_path.write_text(body.rstrip() + "\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
     async def generate_parent_module_docs(
         self,
@@ -515,7 +548,9 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             if len(text) > excerpt_limit:
                 text = text[:excerpt_limit] + "\n[Child page excerpt truncated; follow its citations]"
             child_content.append(f"## {child_name} ({child_name}.md)\n{text}")
-        prompt = PEGA_OVERVIEW_PROMPT.format(name=name, children="\n\n".join(child_content))
+        prompt = pega_documentation_brief(self.config) + PEGA_OVERVIEW_PROMPT.format(
+            name=name, children="\n\n".join(child_content)
+        )
         answer = self.backend.complete(prompt)
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError(f"Empty Pega overview for {name}")
@@ -556,6 +591,11 @@ class PegaDocumentationGenerator(DocumentationGenerator):
                     "Cannot resume: current graph and Markdown inputs do not match the saved evidence snapshot"
                 )
             resumed_plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+            saved_profile = resumed_plan.get("documentation_profile") or {
+                "doc_type": "default", "instructions": ""
+            }
+            if saved_profile != pega_documentation_profile(self.config):
+                raise ValueError("Cannot resume: documentation type or instructions changed")
             expected_tree, resumed_plan = validate_plan(package, resumed_plan)
             tree_path = docs_dir / MODULE_TREE_FILENAME
             saved_tree = json.loads(tree_path.read_text(encoding="utf-8"))
@@ -605,6 +645,10 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             or planned_modules.get("snapshot_key") != package["snapshot_key"]
         ):
             raise ValueError("A supplied Pega plan must name the exact evidence snapshot_key")
+        if planned_modules is not None and planned_modules.get("documentation_profile") not in (
+            None, pega_documentation_profile(self.config)
+        ):
+            raise ValueError("A supplied Pega plan has a different documentation type or instructions")
         if incremental_state.get("applied"):
             plan = json.loads((docs_dir.parent / "plan.json").read_text(encoding="utf-8"))
             tree = json.loads((docs_dir / MODULE_TREE_FILENAME).read_text(encoding="utf-8"))
@@ -618,6 +662,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
                     else plan_modules(package, self.provider, self.backend, self.config.cluster_model or None)
                 )
         )
+        plan["documentation_profile"] = pega_documentation_profile(self.config)
         file_manager.save_json(plan, str(docs_dir.parent / "plan.json"))
         if not incremental_state.get("applied"):
             file_manager.save_json(tree, str(docs_dir / FIRST_MODULE_TREE_FILENAME))
@@ -671,6 +716,7 @@ class PegaDocumentationGenerator(DocumentationGenerator):
             "initial_snapshot_key": package["snapshot_key"],
             "projection_tokens": projection_tokens,
             "prompt_version": PEGA_PROMPT_VERSION,
+            "documentation_profile": pega_documentation_profile(self.config),
             "implementation": _implementation_identity(),
             "model": {
                 "provider": self.config.provider,

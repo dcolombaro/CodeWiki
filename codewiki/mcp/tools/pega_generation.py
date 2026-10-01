@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from codewiki.src.be.pega_prompts import PEGA_DOC_TYPES
+
 
 def _required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
@@ -75,6 +77,10 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
     relation_kinds = arguments.get("relation_kinds") or []
     expand_entity_ids = arguments.get("expand_entity_ids") or []
     replan = bool(arguments.get("replan", False))
+    doc_type = str(arguments.get("doc_type") or "").strip().lower()
+    instructions = str(arguments.get("instructions") or "").strip()
+    if doc_type and doc_type not in PEGA_DOC_TYPES:
+        raise ValueError(f"Unsupported PEGA documentation type: {doc_type}")
     if not isinstance(relationship_types, list) or any(not isinstance(item, str) for item in relationship_types):
         raise ValueError("relationship_types must be an array of strings")
     if not isinstance(relation_kinds, list) or any(not isinstance(item, str) for item in relation_kinds):
@@ -146,6 +152,10 @@ async def _generate(arguments: dict[str, Any]) -> dict[str, Any]:
         main_model=model,
         cluster_model=model,
         fallback_model=model,
+        agent_instructions={
+            "doc_type": doc_type or None,
+            "custom_instructions": instructions or None,
+        } if doc_type or instructions else None,
         prompt_caching=(base_url.rstrip("/") != "https://api.openai.com/v1"),
         artifacts_enabled=False,
         with_prose=False,

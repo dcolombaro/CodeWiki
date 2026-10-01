@@ -8,7 +8,10 @@ from typing import Any
 from codewiki.src.be.agent_tools.read_code_components import read_code_components_tool
 from codewiki.src.be.agent_tools.str_replace_editor import str_replace_editor_tool
 from codewiki.src.be.agent_tools.pega import read_pega_evidence_tool, retrieve_pega_context_tool
-from codewiki.src.be.pega_prompts import PEGA_WRITER_PROMPT
+from codewiki.src.be.pega_prompts import (
+    PEGA_WRITER_PROMPT, pega_writer_focus, pega_writer_organization,
+    pega_writer_requirements,
+)
 from codewiki.src.be.sources.evidence import digest
 from codewiki.src.be.prompt_template import (
     format_leaf_system_prompt,
@@ -25,6 +28,7 @@ def module_agent_spec(
     custom_instructions: str = "",
     delegation_tool: Any = None,
     pega_specialist_enabled: bool = True,
+    doc_type: str | None = None,
 ) -> tuple[str, list[Any]]:
     if source_kind == "pega":
         specialist_instruction = (
@@ -38,6 +42,9 @@ def module_agent_spec(
             module_name=module_name,
             custom_instructions=custom_instructions or "",
             specialist_instruction=specialist_instruction,
+            page_requirements=pega_writer_requirements(doc_type),
+            writer_focus=pega_writer_focus(doc_type),
+            writer_organization=pega_writer_organization(doc_type),
         )
         tools = [read_pega_evidence_tool, str_replace_editor_tool]
         if pega_specialist_enabled:

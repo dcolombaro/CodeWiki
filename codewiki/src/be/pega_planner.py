@@ -10,7 +10,7 @@ from typing import Any
 from codewiki.src.be.module_naming import RESERVED_STEMS, sanitize_module_name
 from codewiki.src.be.pega_prompts import (
     PEGA_PLANNER_PROMPT, PEGA_PROJECT_BATCH_PLANNER_PROMPT,
-    PEGA_PROJECT_RECONCILIATION_PROMPT,
+    PEGA_PROJECT_RECONCILIATION_PROMPT, pega_documentation_brief,
 )
 from codewiki.src.be.sources.pega_mcp import PegaGraphProvider
 from codewiki.src.be.utils import count_tokens
@@ -125,9 +125,10 @@ def _planner_prompt(
     context_cards: list[dict[str, Any]],
     *,
     project_batch: bool,
+    documentation_brief: str = "",
 ) -> str:
     template = PEGA_PROJECT_BATCH_PLANNER_PROMPT if project_batch else PEGA_PLANNER_PROMPT
-    return template.format(
+    return documentation_brief + template.format(
         project=project,
         cards=json.dumps(cards, ensure_ascii=False),
         relationships=json.dumps(relationships, ensure_ascii=False),
@@ -153,11 +154,13 @@ def plan_modules(
     if not scope_ids:
         raise ValueError("The Pega slice has no documented rule entities")
     project_batch = (package.get("scope") or {}).get("mode") in {"project", "project_batch"}
+    documentation_brief = pega_documentation_brief(getattr(backend, "_config", None))
     cards = _planner_cards(package, provider, scope_ids)
     relation_cards = _planner_relationship_cards(package, scope_ids)
     context_cards = _planner_context_cards(package, scope_ids)
     prompt = _planner_prompt(
-        package["project_id"], cards, relation_cards, context_cards, project_batch=project_batch
+        package["project_id"], cards, relation_cards, context_cards,
+        project_batch=project_batch, documentation_brief=documentation_brief,
     )
     answer = backend.complete(prompt, model=cluster_model)
     if not isinstance(answer, str) or not answer.strip():
@@ -174,6 +177,7 @@ def _project_batches(
     provider: PegaGraphProvider,
     *,
     prompt_token_target: int,
+    documentation_brief: str = "",
 ) -> list[list[str]]:
     """Pack complete ruleset/class groups by prompt size, without splitting rules."""
     selected = documented_rule_ids(package)
@@ -204,7 +208,7 @@ def _project_batches(
             candidate_cards,
             candidate_relations,
             candidate_context,
-            project_batch=True,
+            project_batch=True, documentation_brief=documentation_brief,
         )
         if current and count_tokens(candidate_prompt) > prompt_token_target:
             batches.append(current)
@@ -216,7 +220,8 @@ def _project_batches(
             group_relations = _planner_relationship_cards(package, group_set)
             group_context = _planner_context_cards(package, group_set)
             group_prompt = _planner_prompt(
-                package["project_id"], group_cards, group_relations, group_context, project_batch=True
+                package["project_id"], group_cards, group_relations, group_context,
+                project_batch=True, documentation_brief=documentation_brief,
             )
             if count_tokens(group_prompt) > prompt_token_target:
                 batches.append(current)
@@ -232,7 +237,7 @@ def _project_batches(
 
 def _reconcile_project_modules(
     package: dict[str, Any], candidates: list[dict[str, Any]],
-    backend: Any, cluster_model: str | None,
+    backend: Any, cluster_model: str | None, documentation_brief: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Reassign ownership globally; discovery batch boundaries have no authority."""
     owners = documented_rule_ids(package)
@@ -262,7 +267,7 @@ def _reconcile_project_modules(
             str(properties.get("relation_kind") or ""),
             str(properties.get("resolution_outcome") or ""),
         )] += 1
-    prompt = PEGA_PROJECT_RECONCILIATION_PROMPT.format(
+    prompt = documentation_brief + PEGA_PROJECT_RECONCILIATION_PROMPT.format(
         project=package["project_id"],
         rules=json.dumps(catalog(owner_refs), ensure_ascii=False),
         context=json.dumps(catalog(context_refs), ensure_ascii=False),
@@ -341,8 +346,10 @@ def plan_project_modules(
     prompt_token_target = int(
         getattr(getattr(backend, "_config", None), "max_token_per_module", 36_369)
     )
+    documentation_brief = pega_documentation_brief(getattr(backend, "_config", None))
     batches = _project_batches(
-        package, provider, prompt_token_target=max(1, prompt_token_target)
+        package, provider, prompt_token_target=max(1, prompt_token_target),
+        documentation_brief=documentation_brief,
     )
     all_entities = {entity["id"]: entity for entity in package["entities"]}
     proposed_modules: list[dict[str, Any]] = []
@@ -392,7 +399,7 @@ def plan_project_modules(
             used_names.add(candidate.casefold())
             proposed_modules.append({**module, "name": candidate})
     tree, plan, reconciliation = _reconcile_project_modules(
-        package, proposed_modules, backend, cluster_model
+        package, proposed_modules, backend, cluster_model, documentation_brief
     )
     plan["planning"] = {
         "mode": "global_capability_hierarchy",
@@ -522,4 +529,11 @@ def validate_plan(
     }
     if isinstance(proposed.get("planning"), dict):
         plan["planning"] = deepcopy(proposed["planning"])
+    if proposed.get("documentation_profile") is not None:
+        profile = proposed["documentation_profile"]
+        if not isinstance(profile, dict) or set(profile) != {"doc_type", "instructions"}:
+            raise ValueError("Pega plan documentation profile must contain doc_type and instructions")
+        if not all(isinstance(value, str) for value in profile.values()):
+            raise ValueError("Pega plan documentation profile values must be strings")
+        plan["documentation_profile"] = deepcopy(profile)
     return tree, plan

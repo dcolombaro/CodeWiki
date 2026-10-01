@@ -133,6 +133,7 @@ def _navigation(
 
     source_links = []
     edge_links = []
+    inventory_links = []
     for key, page in source_pages.items():
         label = html.escape(page["title"])
         source_links.append(
@@ -143,7 +144,12 @@ def _navigation(
             continue
         label = html.escape(str(page["title"]))
         item = '<a class="nav-link" href="' + _route(key) + '" title="' + label + '">' + label + "</a>"
-        (edge_links if key.startswith("evidence/edges/") else source_links).append(item)
+        if key.startswith("evidence/edges/"):
+            edge_links.append(item)
+        elif key.startswith("evidence/inventories/"):
+            inventory_links.append(item)
+        else:
+            source_links.append(item)
 
     return (
         '<div class="nav-section documentation-navigation"><div class="nav-heading">Documentation</div>'
@@ -158,7 +164,16 @@ def _navigation(
         + str(len(edge_links))
         + "</span></summary>"
         + "".join(edge_links)
-        + "</details></details>"
+        + "</details>"
+        + (
+            '<details class="nav-section"><summary>Module inventories <span class="count">'
+            + str(len(inventory_links))
+            + "</span></summary>"
+            + "".join(inventory_links)
+            + "</details>"
+            if inventory_links else ""
+        )
+        + "</details>"
     )
 
 
@@ -209,8 +224,14 @@ def render_pega_viewer(run_dir: Path) -> Path:
         for record in (evidence_manifest.get("documents") or {}).values()
         if isinstance(record, dict)
     } if evidence_manifest_path.is_file() else {}
-    source_paths = [path for path in evidence_paths if "edges" not in path.relative_to(evidence_dir).parts]
+    source_paths = [
+        path for path in evidence_paths
+        if not {"edges", "inventories"}.intersection(path.relative_to(evidence_dir).parts)
+    ]
     edge_paths = [path for path in evidence_paths if "edges" in path.relative_to(evidence_dir).parts]
+    inventory_paths = [
+        path for path in evidence_paths if "inventories" in path.relative_to(evidence_dir).parts
+    ]
     source_pages: dict[str, dict[str, str]] = {}
     for path in source_paths:
         key = _page_key(run_dir, path)
@@ -226,7 +247,7 @@ def render_pega_viewer(run_dir: Path) -> Path:
             "title": str(metadata.get("title") or path.stem),
             "sha256": str(source_hash),
         }
-    paths = docs_paths + edge_paths
+    paths = docs_paths + edge_paths + inventory_paths
     available = {_page_key(run_dir, path) for path in docs_paths + evidence_paths}
 
     parser = MarkdownIt("commonmark", {"html": False, "linkify": False})

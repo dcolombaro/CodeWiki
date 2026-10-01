@@ -9,7 +9,6 @@ from codewiki import __version__
 from codewiki.cli.commands.config import config_group
 from codewiki.cli.commands.generate import generate_command
 from codewiki.cli.commands.pega import (
-    pega_compare_command,
     pega_generate_command,
     pega_plan_command,
     pega_serve_command,
@@ -53,7 +52,6 @@ cli.add_command(config_group)
 cli.add_command(generate_command, name="generate")
 cli.add_command(pega_snapshot_command)
 cli.add_command(pega_plan_command)
-cli.add_command(pega_compare_command)
 cli.add_command(pega_generate_command)
 cli.add_command(pega_viewer_command)
 cli.add_command(pega_serve_command)

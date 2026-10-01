@@ -50,6 +50,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from codewiki.mcp.session import SessionState, SessionStore
+from codewiki.src.be.pega_prompts import PEGA_DOC_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +438,15 @@ def _pega_generation_tool() -> Tool:
                     "type": "boolean",
                     "default": False,
                     "description": "Reuse current evidence but rerun planning and all page writers",
+                },
+                "doc_type": {
+                    "type": "string",
+                    "enum": list(PEGA_DOC_TYPES),
+                    "description": "Documentation emphasis; functional prioritizes business behavior and decisions",
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": "Additional reader and editorial instructions applied to planning and writing",
                 },
                 "output_dir": {
                     "type": "string",

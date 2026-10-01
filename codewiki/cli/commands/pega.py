@@ -14,6 +14,7 @@ from codewiki.src.be.sources.pega_mcp import (
     PegaMCPClient,
     save_evidence_package,
 )
+from codewiki.src.be.pega_prompts import PEGA_DOC_TYPES
 
 
 async def _resolve_seed(
@@ -203,49 +204,6 @@ def pega_plan_command(project: str, snapshot_dir: Path, plan_file: Path, output:
     )
 
 
-@click.command("pega-compare")
-@click.option("--project", required=True, help="Exact PEGA project ID")
-@click.option("--before-dir", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--after-dir", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--before-plan", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--output", required=True, type=click.Path(path_type=Path))
-def pega_compare_command(
-    project: str,
-    before_dir: Path,
-    after_dir: Path,
-    before_plan: Path | None,
-    output: Path,
-) -> None:
-    """Compare two verified evidence snapshots and locate affected modules."""
-    from codewiki.src.be.sources.pega_diff import compare_evidence_packages
-
-    output = output.resolve()
-    if output.exists():
-        raise click.ClickException(f"Comparison output already exists: {output}")
-    try:
-        before_provider = PegaGraphProvider(
-            None, project=project, cache_dir=before_dir.resolve() / "evidence"
-        )
-        after_provider = PegaGraphProvider(
-            None, project=project, cache_dir=after_dir.resolve() / "evidence"
-        )
-        before = before_provider.load_snapshot(before_dir / "evidence-package.json")
-        after = after_provider.load_snapshot(after_dir / "evidence-package.json")
-        plan = json.loads(before_plan.read_text(encoding="utf-8")) if before_plan else None
-        if plan is not None:
-            from codewiki.src.be.pega_planner import validate_plan
-
-            _, plan = validate_plan(before, plan)
-        report = compare_evidence_packages(before, after, before_plan=plan)
-        save_evidence_package(report, output)
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(
-        f"Saved {report['comparison_kind']} report to {output}; "
-        f"{len(report['impact_from_before_plan']['module_names'])} existing modules need review"
-    )
-
-
 @click.command("pega-generate")
 @click.option("--project", required=True, help="Exact ID from PEGA projects/projects.yaml")
 @click.option("--release", default="lead", show_default=True, help="Application release slug or ID; leadtest is a separate wiki")
@@ -267,6 +225,11 @@ def pega_compare_command(
 @click.option("--cluster-model", default=None, help="Optional model for module planning")
 @click.option("--model-base-url", required=True, help="Explicit customer approved API base URL")
 @click.option("--api-key-env", required=True, help="Name of the environment variable holding the API key")
+@click.option(
+    "--doc-type", type=click.Choice(PEGA_DOC_TYPES, case_sensitive=False),
+    help="Documentation emphasis; functional explains business behavior with concise technical traceability",
+)
+@click.option("--instructions", help="Additional reader and editorial instructions for the PEGA wiki")
 @click.option("--plan-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Optional reviewed module plan for this exact snapshot")
 @click.option(
     "--incremental-from",
@@ -315,6 +278,8 @@ def pega_generate_command(
     cluster_model: str | None,
     model_base_url: str,
     api_key_env: str,
+    doc_type: str | None,
+    instructions: str | None,
     plan_file: Path | None,
     incremental_from: Path | None,
     bundle_evidence: bool,
@@ -393,6 +358,10 @@ def pega_generate_command(
                 main_model=model,
                 cluster_model=cluster_model or model,
                 fallback_model=model,
+                agent_instructions={
+                    "doc_type": doc_type,
+                    "custom_instructions": instructions,
+                } if doc_type or instructions else None,
                 prompt_caching=(model_base_url.rstrip("/") != "https://api.openai.com/v1"),
                 artifacts_enabled=False,
                 with_prose=False,

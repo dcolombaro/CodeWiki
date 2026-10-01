@@ -86,6 +86,10 @@ Generate the documentation for the UnipolLead PEGA project.
 ```
 
 With no seed, `generate_pega_docs` targets the complete configured project.
+To emphasize functional analysis, the chat agent can pass
+`{"project":"unipolLead","release":"lead","doc_type":"functional","instructions":"Write for business analysts"}`.
+These values guide planning, leaf pages, and overviews; they are part of the
+generation identity used for incremental refresh.
 For a focused request, name one exact PEGA rule, for example:
 
 ```text

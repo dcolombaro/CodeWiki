@@ -1,13 +1,19 @@
 # CLI reference
 
-Every command and flag of the `codewiki` CLI, as of 2.0.0. For a short
-introduction, start with the [README](../README.md).
+Reference for the repository commands and the fork's PEGA generation controls.
+For a short introduction, start with the [README](../README.md). Run a command
+with `--help` for its exact installed options.
 
 Commands:
 
 | Command | What it does |
 | --- | --- |
 | `codewiki generate` | Build or update the documentation for the current directory |
+| `codewiki pega-generate` | Generate a wiki from the PEGA graph and Markdown |
+| `codewiki pega-snapshot` | Capture PEGA evidence for inspection or replay |
+| `codewiki pega-plan` | Validate a reviewed PEGA module plan |
+| `codewiki pega-viewer` | Rebuild the local viewer for a completed PEGA run |
+| `codewiki pega-serve` | Serve the latest completed PEGA wiki |
 | `codewiki config set` | Store provider, model, and token settings |
 | `codewiki config agent` | Store default include/exclude/focus/doc-type/instructions |
 | `codewiki config show` | Print the stored settings (`--json` for machine-readable output) |
@@ -113,6 +119,37 @@ codewiki generate --include "*.cs" --exclude "Tests,Specs,*.test.cs"
 codewiki generate --focus "src/core,src/api" --doc-type architecture
 codewiki generate --instructions "Focus on public APIs and include usage examples"
 codewiki generate --max-tokens 16384 --max-depth 3
+```
+
+---
+
+## `codewiki pega-generate`
+
+Generates a PEGA wiki for a whole release by default. For the complete
+UnipolLead `lead` command and setup, see the [PEGA integration guide](pega-integration.md).
+This is a separate command from `codewiki generate`: the latter analyzes a
+codebase and its `--doc-type` choices do not select the PEGA documentation style.
+
+| Flag | Meaning |
+| --- | --- |
+| `--project ID`, `--release SLUG` | Select one project and application release; `lead` is the release default |
+| `--mcp-command PATH`, `--mcp-arg VALUE`, `--mcp-cwd PATH` | Connect to the PEGA KB MCP server for live revision checking and capture |
+| `--seed-id ID` or `--seed-name NAME` | Request a focused slice instead of the complete release; name resolution can also use `--rule-type`, `--class-name`, and `--ruleset` |
+| `--depth N`, `--relationship-type TYPE`, `--relation-kind KIND`, `--expand-entity-id ID`, `--max-documents N` | Bound and filter a focused slice |
+| `--model ID`, `--cluster-model ID`, `--model-base-url URL`, `--api-key-env NAME` | Select the approved model endpoint and the environment variable containing its key |
+| `--doc-type TYPE` | `api`, `architecture`, `user-guide`, `developer`, or `functional`; `functional` emphasizes configured business behavior and decisions |
+| `--instructions TEXT` | Add reader or editorial instructions across planning, leaf pages, and overviews |
+| `--snapshot-dir PATH`, `--plan-file PATH` | Replay saved evidence or use a reviewed plan for the same evidence snapshot |
+| `--incremental-from PATH`, `--replan`, `--resume-existing` | Reuse compatible pages, replan from current evidence, or resume an interrupted run |
+| `--bundle-evidence`, `--cache-dir PATH`, `--output PATH` | Control evidence storage and the new output directory |
+
+The documentation type and instructions are stored in the run manifest and
+plan. Changing either causes a fresh plan and page generation for that scope;
+it does not invalidate the underlying PEGA evidence cache. The matching
+`generate_pega_docs` MCP tool accepts `doc_type` and `instructions` fields.
+
+```bash
+codewiki pega-generate --help
 ```
 
 ---

@@ -94,3 +94,4 @@ Thumbs.db
 !tests/test_updater_orchestrator.py
 !tests/test_pega_project_capture.py
 !tests/test_pega_refresh.py
+!tests/test_pega_documentation_style.py

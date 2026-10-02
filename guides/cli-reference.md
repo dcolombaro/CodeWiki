@@ -135,7 +135,7 @@ codebase and its `--doc-type` choices do not select the PEGA documentation style
 | `--project ID`, `--release SLUG` | Select one project and application release; `lead` is the release default |
 | `--mcp-command PATH`, `--mcp-arg VALUE`, `--mcp-cwd PATH` | Connect to the PEGA KB MCP server for live revision checking and capture |
 | `--seed-id ID` or `--seed-name NAME` | Request a focused slice instead of the complete release; name resolution can also use `--rule-type`, `--class-name`, and `--ruleset` |
-| `--depth N`, `--relationship-type TYPE`, `--relation-kind KIND`, `--expand-entity-id ID`, `--max-documents N` | Bound and filter a focused slice |
+| `--depth N`, `--traversal-direction both\|outgoing`, `--relationship-type TYPE`, `--relation-kind KIND`, `--expand-entity-id ID`, `--max-documents N` | Bound and filter a focused slice; depth is 1–16 and `outgoing` follows rules used by the seed |
 | `--model ID`, `--cluster-model ID`, `--model-base-url URL`, `--api-key-env NAME` | Select the approved model endpoint and the environment variable containing its key |
 | `--doc-type TYPE` | `api`, `architecture`, `user-guide`, `developer`, or `functional`; `functional` explains business behavior plus evidenced REST, data, and external-service boundaries without deep implementation detail |
 | `--instructions TEXT` | Add reader or editorial instructions across planning, leaf pages, and overviews |
@@ -149,6 +149,13 @@ it does not invalidate the underlying PEGA evidence cache. The matching
 `generate_pega_docs` MCP tool accepts `doc_type` and `instructions` fields.
 The functional HTML viewer hides its raw Evidence navigation and citations;
 the source Markdown and inventories remain available in the run for audit.
+For a documented Case Type seed, the focused planner uses the Case Type's
+ordered stages and linked Flow rules to anchor the module tree. It places
+supporting rules under their nearest stage and keeps reused dependencies in a
+shared chapter. A complete-release functional run automatically creates a
+process parent for each documented Case Type, with shared and unrelated rules
+in separate capability areas. Releases without documented Case Types continue
+to use the project capability planner.
 
 ```bash
 codewiki pega-generate --help
@@ -241,6 +248,9 @@ codewiki pega-serve --port 8767     # choose another port
 codewiki pega-serve --run-dir PATH  # serve a specific earlier run
 ```
 
-The command reads `PEGA_PROJECT_ID`, `CODEWIKI_PEGA_CACHE_DIR`, and
-`CODEWIKI_PEGA_OUTPUT_ROOT` from the environment or the checkout's `.env.local`.
+For latest-run lookup, the command reads `PEGA_PROJECT_ID`,
+`CODEWIKI_PEGA_CACHE_DIR`, and `CODEWIKI_PEGA_OUTPUT_ROOT` from the environment
+or the checkout's `.env.local`. With `--run-dir`, it serves the project recorded
+in that run and ignores the default `PEGA_PROJECT_ID`; an explicitly supplied
+`--project` still validates the run's project.
 Stop serving with Ctrl-C.

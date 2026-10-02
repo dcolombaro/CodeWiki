@@ -68,7 +68,33 @@ The optional `--relationship-type` values select Neo4j edge types such as
 `CALLS_ACTIVITY` or `RUNS_DATA_TRANSFORM`. Either filter controls which edges
 expand the slice and which matching edges are retained in its focused evidence
 package. `--expand-entity-id` extends a selected branch by one hop using the
-same filters. The 40-document default limit applies only to focused slices.
+same filters. `--traversal-direction outgoing` follows dependencies from the
+seed in their configured direction, while the default `both` explores either
+end of a relationship. Focused depth can be 1–16. The 40-document default
+limit applies only to focused slices; increase `--max-documents` for a larger
+Case Type process when the evidence justifies it.
+
+A focused seed whose rule type is `Rule-Obj-CaseType` activates the process
+planner. It reads the Case Type's official Markdown to obtain the ordered
+primary and alternate stages, matches each stage process to its captured
+`STARTS_FLOW` relationship, then follows directed `CALLS`, `READS`, and
+`WRITES` dependencies within the evidence package. The tree has one process
+overview with stage chapters in source order. Large stages can have Flow
+journey and supporting subchapters. Rules reached equally from multiple
+stages receive one shared chapter; every documented rule still has exactly
+one primary leaf owner. Page writers read the selected Markdown and edge
+receipts through the same evidence tools as other PEGA runs. A seed that is
+not a Case Type keeps the existing focused planner. A complete release with
+`--doc-type functional` automatically anchors documented Case Types as process
+parents and places rules reused across cases in a shared area. Rules outside
+those case journeys remain in an additional capability area. A release with
+no documented Case Types, such as the captured `unipolLead` / `lead` input,
+keeps the existing project capability planner.
+The process planner requires the Case Type's stage/process configuration and
+the referenced Flow rules with official Markdown; it reports incomplete
+evidence instead of inventing a stage hierarchy.
+The [GTLLife iLove example](pega-case-type-processes.md) gives a concrete
+Case Type command and shows how to inspect its process hierarchy.
 
 The adapter checks `catalog`, `list_releases`, and `kb_status`, then binds the
 capture to exactly one release. It pages the release's `Scoped` nodes and

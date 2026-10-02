@@ -60,7 +60,8 @@ async def _resolve_seed(
 @click.option("--relationship-type", multiple=True, help="Repeat for each traversed edge type")
 @click.option("--relation-kind", multiple=True, help="Repeat for Pega relation_kind values such as CALLS_ACTIVITY")
 @click.option("--expand-entity-id", multiple=True, help="Expand one selected branch by one further edge")
-@click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True, help="Focused slice only")
+@click.option("--depth", default=1, type=click.IntRange(1, 16), show_default=True, help="Focused slice only")
+@click.option("--traversal-direction", type=click.Choice(("both", "outgoing")), default="both", show_default=True, help="Follow both ends or only dependencies called by a focused seed")
 @click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True, help="Focused slice only")
 @click.option("--output", required=True, type=click.Path(path_type=Path))
 def pega_snapshot_command(
@@ -78,6 +79,7 @@ def pega_snapshot_command(
     relation_kind: tuple[str, ...],
     expand_entity_id: tuple[str, ...],
     depth: int,
+    traversal_direction: str,
     max_documents: int,
     output: Path,
 ) -> None:
@@ -85,7 +87,7 @@ def pega_snapshot_command(
     if seed_id and seed_name:
         raise click.UsageError("Provide at most one of --seed-id or --seed-name")
     if not (seed_id or seed_name) and any(
-        (rule_type, class_name, ruleset, relationship_type, relation_kind, expand_entity_id, depth != 1, max_documents != 40)
+        (rule_type, class_name, ruleset, relationship_type, relation_kind, expand_entity_id, depth != 1, traversal_direction != "both", max_documents != 40)
     ):
         raise click.UsageError("Seed, depth, relationship, and document-limit options require --seed-id or --seed-name")
     output = output.resolve()
@@ -114,6 +116,7 @@ def pega_snapshot_command(
                 package = await provider.snapshot_slice(
                     seed_entity_id=resolved_id,
                     depth=depth,
+                    traversal_direction=traversal_direction,
                     relationship_types=list(relationship_type) or None,
                     relation_kinds=list(relation_kind) or None,
                     expand_entity_ids=list(expand_entity_id),
@@ -219,7 +222,8 @@ def pega_plan_command(project: str, snapshot_dir: Path, plan_file: Path, output:
 @click.option("--relationship-type", multiple=True)
 @click.option("--relation-kind", multiple=True, help="Pega relation_kind values to follow, e.g. CALLS_ACTIVITY")
 @click.option("--expand-entity-id", multiple=True, help="Expand one selected branch by one further edge")
-@click.option("--depth", default=1, type=click.IntRange(1, 8), show_default=True, help="Focused slice only")
+@click.option("--depth", default=1, type=click.IntRange(1, 16), show_default=True, help="Focused slice only")
+@click.option("--traversal-direction", type=click.Choice(("both", "outgoing")), default="both", show_default=True, help="Follow both ends or only dependencies called by a focused seed")
 @click.option("--max-documents", default=40, type=click.IntRange(1, 500), show_default=True, help="Focused slice only")
 @click.option("--model", required=True, help="Model ID on the customer approved API endpoint")
 @click.option("--cluster-model", default=None, help="Optional model for module planning")
@@ -273,6 +277,7 @@ def pega_generate_command(
     relation_kind: tuple[str, ...],
     expand_entity_id: tuple[str, ...],
     depth: int,
+    traversal_direction: str,
     max_documents: int,
     model: str,
     cluster_model: str | None,
@@ -290,7 +295,7 @@ def pega_generate_command(
 ) -> None:
     """Generate an evidence-linked wiki for a Pega project or focused slice."""
     if snapshot_dir is not None:
-        if any((seed_id, seed_name, rule_type, class_name, ruleset, mcp_command, mcp_arg, mcp_cwd, relationship_type, relation_kind, expand_entity_id)):
+        if any((seed_id, seed_name, rule_type, class_name, ruleset, mcp_command, mcp_arg, mcp_cwd, relationship_type, relation_kind, expand_entity_id, traversal_direction != "both")):
             raise click.UsageError(
                 "--snapshot-dir cannot be combined with live MCP or seed options"
             )
@@ -299,7 +304,7 @@ def pega_generate_command(
             "Live generation requires --mcp-command and --mcp-cwd; provide at most one seed"
         )
     if snapshot_dir is None and not (seed_id or seed_name) and any(
-        (rule_type, class_name, ruleset, relationship_type, relation_kind, expand_entity_id, depth != 1, max_documents != 40)
+        (rule_type, class_name, ruleset, relationship_type, relation_kind, expand_entity_id, depth != 1, traversal_direction != "both", max_documents != 40)
     ):
         raise click.UsageError("Seed, depth, relationship, and document-limit options require --seed-id or --seed-name")
     if incremental_from is not None and plan_file is not None:
@@ -410,6 +415,7 @@ def pega_generate_command(
             class_name=class_name,
             ruleset=ruleset,
             depth=depth,
+            traversal_direction=traversal_direction,
             relationship_types=list(relationship_type),
             relation_kinds=list(relation_kind),
             expand_entity_ids=list(expand_entity_id),
@@ -475,11 +481,14 @@ def pega_viewer_command(run_dir: Path) -> None:
 
 
 @click.command("pega-serve")
-@click.option("--project", help="PEGA project ID; defaults to PEGA_PROJECT_ID when set")
+@click.option(
+    "--project",
+    help="Project for latest-run lookup; with --run-dir, validate only when explicitly supplied",
+)
 @click.option(
     "--run-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Serve this run instead of locating the latest one",
+    help="Serve this run and infer its project unless --project is supplied",
 )
 @click.option(
     "--cache-dir",
@@ -510,7 +519,10 @@ def pega_serve_command(
 
     repo_root = Path(__file__).resolve().parents[3]
     load_dotenv(repo_root / ".env.local", override=False)
-    project = project or os.environ.get("PEGA_PROJECT_ID") or None
+    # An explicit run identifies its own project. The environment default is
+    # only a filter when searching for the latest run.
+    if run_dir is None:
+        project = project or os.environ.get("PEGA_PROJECT_ID") or None
     output_root = Path(os.environ.get("CODEWIKI_PEGA_OUTPUT_ROOT", "runs")).expanduser()
     if not output_root.is_absolute():
         output_root = repo_root / output_root
@@ -554,12 +566,13 @@ def pega_serve_command(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise click.ClickException(f"Cannot read PEGA run manifest at {manifest_path}: {exc}") from exc
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("source_kind") != "pega"
-        or (project and manifest.get("project_id") != project)
-    ):
-        raise click.ClickException(f"Run at {run_dir} does not match the requested PEGA project")
+    if not isinstance(manifest, dict) or manifest.get("source_kind") != "pega":
+        raise click.ClickException(f"Run at {run_dir} has no valid PEGA manifest")
+    if project and manifest.get("project_id") != project:
+        raise click.ClickException(
+            f"Run at {run_dir} belongs to project {manifest.get('project_id')!r}, "
+            f"not the requested project {project!r}"
+        )
 
     if not (run_dir / "index.html").is_file():
         from codewiki.cli.pega_viewer import render_pega_viewer

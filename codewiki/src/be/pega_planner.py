@@ -178,8 +178,9 @@ def _project_batches(
     *,
     prompt_token_target: int,
     documentation_brief: str = "",
+    split_oversized_groups: bool = False,
 ) -> list[list[str]]:
-    """Pack complete ruleset/class groups by prompt size, without splitting rules."""
+    """Pack rule groups by prompt size, keeping each rule's evidence intact."""
     selected = documented_rule_ids(package)
     if not selected:
         raise ValueError("The Pega project has no documented rule entities")
@@ -193,7 +194,29 @@ def _project_batches(
             groups[group_key],
             key=lambda item: (str(item.get("rule_category") or ""), str(item.get("name") or ""), item["id"]),
         )
-        groups_by_ids.append([entity["id"] for entity in members])
+        group_ids = [entity["id"] for entity in members]
+        if not split_oversized_groups:
+            groups_by_ids.append(group_ids)
+            continue
+        current_group: list[str] = []
+        for entity_id in group_ids:
+            candidate = [*current_group, entity_id]
+            selected_ids = set(candidate)
+            candidate_prompt = _planner_prompt(
+                package["project_id"],
+                _planner_cards(package, provider, selected_ids),
+                _planner_relationship_cards(package, selected_ids),
+                _planner_context_cards(package, selected_ids),
+                project_batch=True,
+                documentation_brief=documentation_brief,
+            )
+            if current_group and count_tokens(candidate_prompt) > prompt_token_target:
+                groups_by_ids.append(current_group)
+                current_group = [entity_id]
+            else:
+                current_group = candidate
+        if current_group:
+            groups_by_ids.append(current_group)
 
     batches: list[list[str]] = []
     current: list[str] = []
@@ -339,17 +362,20 @@ def _reconcile_project_modules(
 
 
 def plan_project_modules(
-    package: dict[str, Any], provider: PegaGraphProvider, backend: Any, cluster_model: str | None
+    package: dict[str, Any], provider: PegaGraphProvider, backend: Any, cluster_model: str | None,
+    *, prompt_token_target: int | None = None, split_oversized_groups: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Discover capabilities in batches, then reconcile a hierarchy across the project."""
     usage_start = len(getattr(backend, "usage_events", []))
-    prompt_token_target = int(
-        getattr(getattr(backend, "_config", None), "max_token_per_module", 36_369)
+    prompt_token_target = (
+        int(prompt_token_target) if prompt_token_target is not None
+        else int(getattr(getattr(backend, "_config", None), "max_token_per_module", 36_369))
     )
     documentation_brief = pega_documentation_brief(getattr(backend, "_config", None))
     batches = _project_batches(
         package, provider, prompt_token_target=max(1, prompt_token_target),
         documentation_brief=documentation_brief,
+        split_oversized_groups=split_oversized_groups,
     )
     all_entities = {entity["id"]: entity for entity in package["entities"]}
     proposed_modules: list[dict[str, Any]] = []

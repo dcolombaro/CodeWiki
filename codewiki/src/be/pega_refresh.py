@@ -24,6 +24,7 @@ def scope_request(
     class_name: str | None = None,
     ruleset: str | None = None,
     depth: int = 1,
+    traversal_direction: str = "both",
     relationship_types: list[str] | None = None,
     relation_kinds: list[str] | None = None,
     expand_entity_ids: list[str] | None = None,
@@ -40,6 +41,7 @@ def scope_request(
         "class_name": class_name,
         "ruleset": ruleset,
         "depth": depth,
+        "traversal_direction": traversal_direction,
         "relationship_types": sorted(set(relationship_types or [])),
         "relation_kinds": sorted(set(relation_kinds or [])),
         "expand_entity_ids": sorted(set(expand_entity_ids or [])),
@@ -286,6 +288,7 @@ def slice_project_package(
     *,
     seed_entity_id: str,
     depth: int,
+    traversal_direction: str = "both",
     relationship_types: list[str] | None,
     relation_kinds: list[str] | None = None,
     expand_entity_ids: list[str] | None,
@@ -300,11 +303,15 @@ def slice_project_package(
     edges = package.get("relationships") or []
     selected_types = set(relationship_types or [])
     selected_kinds = set(relation_kinds or [])
+    if traversal_direction not in {"both", "outgoing"}:
+        raise ValueError("Pega KB traversal direction must be both or outgoing")
 
     def neighbors(entity_id: str) -> set[str]:
         result: set[str] = set()
         for edge in edges:
             if entity_id not in (edge["source_entity_id"], edge["target_entity_id"]):
+                continue
+            if traversal_direction == "outgoing" and edge["source_entity_id"] != entity_id:
                 continue
             relation_kind = (edge.get("properties") or {}).get("relation_kind")
             if selected_types and edge["relationship_type"] not in selected_types:
@@ -388,6 +395,7 @@ def slice_project_package(
             "mode": "focused",
             "seed_entity_ids": [seed_entity_id],
             "depth": depth,
+            "traversal_direction": traversal_direction,
             "relationship_types": sorted(selected_types),
             "relation_kinds": sorted(selected_kinds),
             "release": (package.get("scope") or {}).get("release"),
@@ -478,6 +486,7 @@ async def prepare_pega_evidence(
                     full_package,
                     seed_entity_id=seed_id,
                     depth=int(request["depth"]),
+                    traversal_direction=request.get("traversal_direction", "both"),
                     relationship_types=request.get("relationship_types") or None,
                     relation_kinds=request.get("relation_kinds") or None,
                     expand_entity_ids=request.get("expand_entity_ids") or None,
@@ -514,6 +523,7 @@ async def prepare_pega_evidence(
         package = await provider.snapshot_slice(
             seed_entity_id=seed_id,
             depth=int(request["depth"]),
+            traversal_direction=request.get("traversal_direction", "both"),
             relationship_types=request.get("relationship_types") or None,
             relation_kinds=request.get("relation_kinds") or None,
             expand_entity_ids=request.get("expand_entity_ids") or [],

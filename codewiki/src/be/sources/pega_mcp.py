@@ -1136,17 +1136,24 @@ class PegaKBGraphProvider(PegaGraphProvider):
         """Fingerprint the selected release graph manifest and all referenced Markdown bytes."""
         self._require_initialized()
         assert self.status is not None and self.release_id is not None
-        rows = await self._read_cypher(
-            "MATCH (n:Scoped) WHERE n.release = $release "
-            "RETURN n.uid AS uid, n.markdown_path AS markdown_path ORDER BY n.uid",
-            limit=self._PAGE_SIZE,
-        )
         expected_nodes = int(self.status["entities"])
+        rows: list[dict[str, Any]] = []
+        for offset in range(0, expected_nodes, self._PAGE_SIZE):
+            rows.extend(
+                await self._read_cypher(
+                    "MATCH (n:Scoped) WHERE n.release = $release "
+                    "RETURN n.uid AS uid, n.markdown_path AS markdown_path ORDER BY n.uid "
+                    "SKIP $offset LIMIT $page_size",
+                    params={"offset": offset, "page_size": self._PAGE_SIZE},
+                )
+            )
         if len(rows) != expected_nodes:
             raise RuntimeError(
                 f"Release node inventory changed: read {len(rows)} nodes, "
                 f"manifest reports {expected_nodes}"
             )
+        if len({row.get("uid") for row in rows}) != expected_nodes:
+            raise RuntimeError("Release node inventory contains duplicate or missing UIDs")
         markdown_hashes: dict[str, str] = {}
         for row in rows:
             path = row.get("markdown_path")
@@ -1426,6 +1433,7 @@ class PegaKBGraphProvider(PegaGraphProvider):
         *,
         seed_entity_id: str,
         depth: int = 1,
+        traversal_direction: str = "both",
         relationship_types: list[str] | None = None,
         relation_kinds: list[str] | None = None,
         expand_entity_ids: list[str] | None = None,
@@ -1434,8 +1442,10 @@ class PegaKBGraphProvider(PegaGraphProvider):
         self._require_initialized()
         self._require_ready_status()
         self._check_id(seed_entity_id, "entity")
-        if not 1 <= depth <= 8:
-            raise ValueError("Pega KB capture depth must be between 1 and 8")
+        if not 1 <= depth <= 16:
+            raise ValueError("Pega KB capture depth must be between 1 and 16")
+        if traversal_direction not in {"both", "outgoing"}:
+            raise ValueError("Pega KB traversal direction must be both or outgoing")
         selected_types = set(relationship_types or [])
         selected_kinds = set(relation_kinds or [])
         allowed_types = set((self.schema or {}).get("edge_types") or [])
@@ -1452,6 +1462,8 @@ class PegaKBGraphProvider(PegaGraphProvider):
             for entity_id in frontier:
                 for relation in self._relationships.values():
                     if entity_id not in (relation.source_entity_id, relation.target_entity_id):
+                        continue
+                    if traversal_direction == "outgoing" and relation.source_entity_id != entity_id:
                         continue
                     if selected_types and relation.relationship_type not in selected_types:
                         continue
@@ -1471,6 +1483,8 @@ class PegaKBGraphProvider(PegaGraphProvider):
             await self.get_entity(entity_id)
             for relation in self._relationships.values():
                 if entity_id not in (relation.source_entity_id, relation.target_entity_id):
+                    continue
+                if traversal_direction == "outgoing" and relation.source_entity_id != entity_id:
                     continue
                 if selected_types and relation.relationship_type not in selected_types:
                     continue
@@ -1504,6 +1518,7 @@ class PegaKBGraphProvider(PegaGraphProvider):
             "mode": "focused",
             "seed_entity_ids": [seed_entity_id],
             "depth": depth,
+            "traversal_direction": traversal_direction,
             "relationship_types": sorted(selected_types),
             "relation_kinds": sorted(selected_kinds),
             "release": self.release_id,

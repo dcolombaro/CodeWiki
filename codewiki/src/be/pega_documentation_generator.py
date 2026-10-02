@@ -13,6 +13,7 @@ from typing import Any
 from codewiki.src.be.documentation_generator import DocumentationGenerator, IncompleteDocumentationError
 from codewiki.src.be.pydantic_ai_backend import PydanticAIBackend
 from codewiki.src.be.pega_planner import documented_rule_ids, plan_modules, plan_project_modules, validate_plan
+from codewiki.src.be.pega_case_planner import plan_case_modules, plan_case_type_project_modules
 from codewiki.src.be.pega_prompts import (
     PEGA_OVERVIEW_PROMPT, PEGA_PROMPT_VERSION,
     pega_documentation_brief, pega_documentation_profile,
@@ -37,6 +38,7 @@ def _implementation_identity() -> dict[str, Any]:
         "codewiki/src/be/documentation_generator.py",
         "codewiki/src/be/llm_services.py",
         "codewiki/src/be/pega_documentation_generator.py",
+        "codewiki/src/be/pega_case_planner.py",
         "codewiki/src/be/pega_planner.py",
         "codewiki/src/be/pega_prompts.py",
         "codewiki/src/be/pydantic_ai_backend.py",
@@ -652,16 +654,25 @@ class PegaDocumentationGenerator(DocumentationGenerator):
         if incremental_state.get("applied"):
             plan = json.loads((docs_dir.parent / "plan.json").read_text(encoding="utf-8"))
             tree = json.loads((docs_dir / MODULE_TREE_FILENAME).read_text(encoding="utf-8"))
-        else:
-            tree, plan = (
-                validate_plan(package, planned_modules)
-                if planned_modules is not None
-                else (
-                    plan_project_modules(package, self.provider, self.backend, self.config.cluster_model or None)
-                    if package.get("scope", {}).get("mode") == "project"
-                    else plan_modules(package, self.provider, self.backend, self.config.cluster_model or None)
+        elif planned_modules is not None:
+            tree, plan = validate_plan(package, planned_modules)
+        elif package.get("scope", {}).get("mode") == "project":
+            case_plan = (
+                plan_case_type_project_modules(
+                    package, self.provider, self.backend, self.config.cluster_model or None
                 )
-        )
+                if self.config.doc_type == "functional" else None
+            )
+            tree, plan = case_plan or plan_project_modules(
+                package, self.provider, self.backend, self.config.cluster_model or None
+            )
+        else:
+            case_plan = plan_case_modules(
+                package, self.provider, self.backend, self.config.cluster_model or None
+            )
+            tree, plan = case_plan or plan_modules(
+                package, self.provider, self.backend, self.config.cluster_model or None
+            )
         plan["documentation_profile"] = pega_documentation_profile(self.config)
         file_manager.save_json(plan, str(docs_dir.parent / "plan.json"))
         if not incremental_state.get("applied"):

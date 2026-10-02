@@ -83,7 +83,7 @@
       {{NAVIGATION}}
     </nav>
     <main class="main">
-      <div class="toolbar"><button id="menu-button" type="button" aria-label="Open navigation">☰</button><div><div class="eyebrow" id="page-kind"></div><h1 id="page-title"></h1></div><a class="raw-link" id="raw-link">Raw Markdown</a></div>
+      <div class="toolbar"><button id="menu-button" type="button" aria-label="Open navigation">☰</button><div><div class="eyebrow" id="page-kind"></div><h1 id="page-title"></h1></div>{{RAW_LINK}}</div>
       <div class="scope-note">{{SCOPE_NOTE}}</div>
       <article class="content" id="content"></article>
     </main>
@@ -199,7 +199,8 @@
         content.innerHTML = page.html;
         renderDiagrams();
       }
-      document.getElementById('raw-link').href = encodeURI(key);
+      const rawLink = document.getElementById('raw-link');
+      if (rawLink) rawLink.href = encodeURI(key);
       document.querySelectorAll('.nav-link').forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#/' + encodeURIComponent(key)));
       const headings = source ? [] : page.headings.filter(item => item.level === 2 || item.level === 3);
       const toc = document.getElementById('toc');

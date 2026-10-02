@@ -99,6 +99,24 @@ def module_user_prompt(
         for edge in pega_provider._relationships.values()
         if edge.source_entity_id in core_component_ids or edge.target_entity_id in core_component_ids
     ]
+    # A dependency need not own a chapter to matter to the reader. Give the
+    # writer the identities at both ends of each selected relationship.
+    adjacent_ids = {
+        endpoint
+        for edge in edges
+        for endpoint in (edge["source_entity_id"], edge["target_entity_id"])
+        if endpoint not in core_component_ids
+    }
+    supporting_entities = [
+        pega_provider._entities[entity_id].card()
+        for entity_id in sorted(adjacent_ids)
+        if entity_id in getattr(pega_provider, "_entities", {})
+    ]
+    unresolved_references = [
+        reference
+        for reference in getattr(pega_provider, "_unresolved_references", [])
+        if reference.get("source_entity_id") in core_component_ids
+    ]
     tree_context = []
     purposes = getattr(pega_provider, "_module_purposes", {})
 
@@ -121,5 +139,7 @@ def module_user_prompt(
         "The listed relationships are directed configuration links, not execution traces.\n\n"
         f"<MODULE_TREE>{json.dumps(tree_context, ensure_ascii=False)}</MODULE_TREE>\n"
         f"<ENTITY_CARDS>{json.dumps(cards, ensure_ascii=False)}</ENTITY_CARDS>\n"
-        f"<DIRECTED_RELATIONSHIPS>{json.dumps(edges, ensure_ascii=False)}</DIRECTED_RELATIONSHIPS>"
+        f"<DIRECTED_RELATIONSHIPS>{json.dumps(edges, ensure_ascii=False)}</DIRECTED_RELATIONSHIPS>\n"
+        f"<SUPPORTING_ENTITIES>{json.dumps(supporting_entities, ensure_ascii=False)}</SUPPORTING_ENTITIES>\n"
+        f"<UNRESOLVED_REFERENCES>{json.dumps(unresolved_references, ensure_ascii=False)}</UNRESOLVED_REFERENCES>"
     )

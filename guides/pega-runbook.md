@@ -15,9 +15,10 @@ or traversal depth is required.
 | Upstream MCP server | `pega_kb.mcp_server` |
 | Project / release selector | `unipolLead` / `lead` |
 | Resolved release | `unipolLead::Lead::01.01.01` |
-| Functional wiki | `runs/unipollead-lead-wiki-functional-20261001-v4/` |
+| Functional wiki | `runs/unipollead-lead-wiki-functional-20261002-v5/` |
 | Earlier comparison run | `runs/unipollead-lead-wiki-20260930-v6/` |
-| Viewer address | <http://127.0.0.1:8766/index.html> |
+| Functional viewer address | <http://127.0.0.1:8766/index.html> |
+| V6 comparison viewer address | <http://127.0.0.1:8767/index.html> |
 
 Both completed runs use the same evidence snapshot: **480 entities, 793 directed
 relationships, and 438 official Markdown references**. The earlier v6 run
@@ -29,10 +30,12 @@ may change them. Selecting `lead` explicitly avoids counting the additional
 `leadtest` materialization again.
 
 The functional run uses `--doc-type functional`. Its chapters describe
-configured capabilities, conditions, decisions, outcomes, and exceptions in
-reader-facing terms. Every leaf has direct links to official Markdown, while
-its complete rule and relationship inventory is linked under
-`evidence/inventories/`. In a check of the finished run, all 437 rule owners,
+configured capabilities, conditions, decisions, outcomes, service boundaries,
+external dependencies, and database use in reader-facing terms. The underlying
+Markdown retains citations, while the viewer hides raw evidence links and the
+Evidence navigation from business readers. Its complete rule and relationship
+inventories remain under `evidence/inventories/` for offline audit. In a check
+of the finished run, all 437 rule owners,
 their 774 captured outgoing relationship receipts, 17 inventories, local
 Markdown links, and the generated viewer were present. The remaining 19
 captured relationships originate from supporting entities and remain in the
@@ -77,11 +80,11 @@ To select the complete v6 wiki explicitly:
 ```bash
 codewiki pega-serve --project unipolLead \
   --run-dir /home/dcolombaro/projects/Genertel/codewiki-pega/runs/unipollead-lead-wiki-20260930-v6 \
-  --port 8766
+  --port 8767
 ```
 
 To pin the functional wiki instead, use `--run-dir
-/home/dcolombaro/projects/Genertel/codewiki-pega/runs/unipollead-lead-wiki-functional-20261001-v4`.
+/home/dcolombaro/projects/Genertel/codewiki-pega/runs/unipollead-lead-wiki-functional-20261002-v5`.
 
 Viewing a completed run requires the HTTP server and local files. It does not
 require Neo4j, Docker, an MCP connection, or model API calls. V6 links its
@@ -92,9 +95,12 @@ The functional run's sidebar contains:
 
 - **Overview:** project introduction and links to capability areas.
 - **Documentation:** five expandable capability areas and their leaf chapters.
-- **Evidence:** official Markdown, relationship receipts, and linked module
-  inventories supporting citations.
-  Relationship receipts are supporting records, not module chapters.
+
+The functional reader view does not expose an **Evidence** section, source
+citations, inventories, or the Raw Markdown button. Those files remain in the
+run and evidence cache for audit and incremental refresh. A normal technical
+wiki can still expose them. This is a presentation choice, not access control
+for someone with filesystem or direct HTTP access to the run.
 
 Mermaid diagrams render with the local
 `assets/mermaid-11.9.0.min.js` bundle. No external validation endpoint or CDN
@@ -105,7 +111,7 @@ Rebuild the viewer from existing Markdown without generating prose:
 
 ```bash
 cd /home/dcolombaro/projects/Genertel/codewiki-pega
-codewiki pega-viewer --run-dir runs/unipollead-lead-wiki-functional-20261001-v4
+codewiki pega-viewer --run-dir runs/unipollead-lead-wiki-functional-20261002-v5
 ```
 
 ## 2. Inspect the dependency graph evidence
@@ -315,8 +321,8 @@ codewiki pega-generate \
 ```
 
 The completed v6 wiki uses the original PEGA writing style. The completed
-functional v4 wiki used the same captured input and added `--doc-type
-functional` to this command.
+functional v5 wiki replayed the same captured input and used `--doc-type
+functional` with a reviewed plan.
 It directs the batch discovery planner, the project-wide reconciliation pass,
 leaf writers, and parent overviews toward business capabilities, conditions,
 decisions, outcomes, and documented exceptions. It keeps exact technical rule
@@ -339,16 +345,21 @@ add a missing upstream synthesis. The writers describe configured behavior in
 business terms and label business implications as inferred when the source
 does not state them directly.
 
-In the finished comparison, the functional run has 17 leaf chapters versus
-v6's 16. Its leaf narratives contain 14,963 words versus 15,381 in v6; their
+In the earlier v4 comparison, the functional run had 17 leaf chapters versus
+v6's 16. Its leaf narratives contained 14,963 words versus 15,381 in v6; their
 median length is 835 versus 940 words. The narrative has no graph ID or
 `Rule-` type listings, while the earlier run included them and appended the
 full inventories inside each chapter. The CercaAgenzia, round-robin,
 geo-meritocratic, and Contatori chapters now organize their sections around
 applicability, decisions, outcomes, and documented limits. These checks show
-a clearer functional emphasis while preserving exact source traceability.
+a clearer functional emphasis while preserving exact source traceability. V5
+keeps the same 17-leaf ownership and regenerates all pages with explicit
+instructions to explain incoming REST services, external data sources, and
+configured database actions at a functional level. In the CipAgenzia chapter,
+for example, `D_AceCipTarget` is named as the target data page while its
+unexported implementation is identified as an evidence limit.
 
-V4 uses a reviewed plan from `runs/unipollead-lead-wiki-functional-20261001-v3/reviewed-functional-plan.json`.
+V5 uses the reviewed plan from `runs/unipollead-lead-wiki-functional-20261001-v3/reviewed-functional-plan.json`.
 Review found that the central `AzioneMotoreGeoMeritocratico` selection activity
 had been assigned to the CercaAgenzia entry chapter. The reviewed plan moved
 that one rule to the geo-meritocratic strategy chapter, with all 437 rules still
@@ -356,7 +367,7 @@ owned exactly once. The corrected chapter now documents the configured
 counter-versus-threshold selection. The project-wide reconciliation prompt was
 also updated to keep a strategy's central decision rule with that strategy in
 future automatic plans. A fresh automatic plan may differ, so inspect its
-ownership and generated behavior before treating it as equivalent to v4.
+ownership and generated behavior before treating it as equivalent to v5.
 
 The output directory must be new or empty. The command connects to the upstream
 MCP server, checks the release revision, reuses or captures evidence, plans and
@@ -564,11 +575,20 @@ Reads are guided by assigned rules and evidence references. The writer does
 not rescan Neo4j or receive the entire Markdown corpus in every prompt. Each
 writer edits its assigned page and cannot add submodules or change ownership.
 
+**Next implementation step:** generate independent PEGA leaf pages concurrently
+with a bounded number of writer agents. The current generator awaits each leaf
+in sequence. Parallel writers should use the fixed evidence package and module
+tree, write only their own pages, and avoid concurrent writes to the shared
+`module_tree.json`. Aggregate evidence-read and model-usage records safely,
+respect model endpoint rate limits, and preserve resume behavior. Start parent
+overviews only after their child pages finish.
+
 ### Step 8: write capability and project overviews
 
 Once its children are written, each parent writer receives their generated text
-and summarizes how they fit together. The root overview summarizes the four
-capability areas. CodeWiki appends a child-page index to every parent and the
+and summarizes how they fit together. The root overview summarizes the selected
+capability areas (five in functional v5, four in v6). CodeWiki appends a
+child-page index to every parent and the
 project overview.
 
 The overview helper can excerpt long child pages: its current limit is 24,000
@@ -581,9 +601,10 @@ source sections. Every parent in v6 has at most seven children.
 After prose generation, CodeWiki builds a deterministic `Source inventory`
 for every leaf. In the standard style it appends the inventory to the chapter.
 With `--doc-type functional`, it writes the inventory under
-`evidence/inventories/<module>.md` and adds one link from the chapter. The
-functional wiki therefore keeps rule and edge listings available for audit
-without making them part of the main explanation:
+`evidence/inventories/<module>.md` and adds one link to the Markdown chapter.
+The viewer removes that link and the raw citations from the reader-facing page.
+The functional wiki therefore keeps rule and edge listings available for audit
+without making them part of the reader-facing explanation:
 
 - **Owned rules:** each assigned rule's name, type, exact ID, and links to its
   official Markdown. Compare this list with `plan.json`.

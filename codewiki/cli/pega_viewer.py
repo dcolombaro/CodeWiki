@@ -43,9 +43,24 @@ def _route(key: str, anchor: str = "") -> str:
 
 
 def _render_page(
-    markdown: str, key: str, available: set[str], parser: MarkdownIt
+    markdown: str, key: str, available: set[str], parser: MarkdownIt,
+    *, show_evidence: bool = True,
 ) -> dict[str, object]:
     front_matter, body = _front_matter(markdown)
+    if not show_evidence:
+        # Keep audit citations in the Markdown artifact, while presenting a
+        # clean reading view for the functional audience.
+        body = body.split("<!-- codewiki-pega-source-inventory -->", 1)[0]
+        body = re.sub(
+            r"(?ms)^#{2,3} Source inventory[ \t]*\n.*?(?=^#{1,3} [^\n]+|\Z)",
+            "", body,
+        )
+        body = re.sub(r"\[[^\]]+\]\(\.\./evidence/[^)]+\)", "", body)
+        body = "\n".join(
+            re.sub(r"(?:\s*·\s*)+$", "", line).rstrip()
+            for line in body.split("\n")
+        )
+        body = re.sub(r"(?m)^[ \t]*[-*+][ \t]*\n", "", body)
     tokens = parser.parse(body)
     used_slugs: dict[str, int] = {}
     headings: list[dict[str, str | int]] = []
@@ -104,6 +119,7 @@ def _navigation(
     module_tree: dict,
     pages: dict[str, dict[str, object]],
     source_pages: dict[str, dict[str, str]],
+    *, show_evidence: bool = True,
 ) -> str:
     module_links = [
         '<a class="nav-link" href="' + _route("docs/overview.md") + '">Overview</a>'
@@ -130,6 +146,12 @@ def _navigation(
                 module_links.append('</details>')
 
     add_modules(module_tree)
+    documentation = (
+        '<div class="nav-section documentation-navigation"><div class="nav-heading">Documentation</div>'
+        + "".join(module_links) + '</div>'
+    )
+    if not show_evidence:
+        return documentation
 
     source_links = []
     edge_links = []
@@ -152,9 +174,8 @@ def _navigation(
             source_links.append(item)
 
     return (
-        '<div class="nav-section documentation-navigation"><div class="nav-heading">Documentation</div>'
-        + "".join(module_links)
-        + '</div><details class="nav-section evidence-navigation"><summary>Evidence</summary>'
+        documentation
+        + '<details class="nav-section evidence-navigation"><summary>Evidence</summary>'
         + '<p class="nav-note">Source documents and relationship receipts supporting the chapter citations.</p>'
         + '<details class="nav-section"><summary>Official sources <span class="count">'
         + str(len(source_links))
@@ -213,6 +234,10 @@ def render_pega_viewer(run_dir: Path) -> Path:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 if hashlib.sha256(stable_json(metadata).encode("utf-8")).hexdigest() != record["metadata_sha256"]:
                     raise ValueError(f"Official document metadata changed since capture: {document_id}")
+    show_evidence = (
+        (evidence_manifest.get("documentation_profile") or {}).get("doc_type") != "functional"
+        if evidence_manifest_path.is_file() else True
+    )
 
     docs_paths = sorted(docs_dir.glob("*.md"))
     evidence_dir = run_dir / "evidence"
@@ -247,8 +272,10 @@ def render_pega_viewer(run_dir: Path) -> Path:
             "title": str(metadata.get("title") or path.stem),
             "sha256": str(source_hash),
         }
-    paths = docs_paths + edge_paths + inventory_paths
-    available = {_page_key(run_dir, path) for path in docs_paths + evidence_paths}
+    paths = docs_paths + (edge_paths + inventory_paths if show_evidence else [])
+    if not show_evidence:
+        source_pages = {}
+    available = {_page_key(run_dir, path) for path in paths + (source_paths if show_evidence else [])}
 
     parser = MarkdownIt("commonmark", {"html": False, "linkify": False})
     parser.enable("table")
@@ -259,7 +286,8 @@ def render_pega_viewer(run_dir: Path) -> Path:
     parser.add_render_rule("image", text_only_image)
     pages = {
         _page_key(run_dir, path): _render_page(
-            path.read_text(encoding="utf-8"), _page_key(run_dir, path), available, parser
+            path.read_text(encoding="utf-8"), _page_key(run_dir, path), available, parser,
+            show_evidence=show_evidence,
         )
         for path in paths
     }
@@ -287,7 +315,8 @@ def render_pega_viewer(run_dir: Path) -> Path:
         template.replace("{{TITLE}}", html.escape(f"{project} | PEGA CodeWiki"))
         .replace("{{PROJECT}}", html.escape(project))
         .replace("{{SCOPE_NOTE}}", html.escape(scope_note))
-        .replace("{{NAVIGATION}}", _navigation(module_tree, pages, source_pages))
+        .replace("{{NAVIGATION}}", _navigation(module_tree, pages, source_pages, show_evidence=show_evidence))
+        .replace("{{RAW_LINK}}", '<a class="raw-link" id="raw-link">Raw Markdown</a>' if show_evidence else "")
         .replace("{{PAGES_JSON}}", pages_json)
         .replace("{{SOURCES_JSON}}", json.dumps(source_pages, ensure_ascii=False).replace("<", "\\u003c"))
     )

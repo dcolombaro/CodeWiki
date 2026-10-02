@@ -137,7 +137,7 @@ codebase and its `--doc-type` choices do not select the PEGA documentation style
 | `--seed-id ID` or `--seed-name NAME` | Request a focused slice instead of the complete release; name resolution can also use `--rule-type`, `--class-name`, and `--ruleset` |
 | `--depth N`, `--relationship-type TYPE`, `--relation-kind KIND`, `--expand-entity-id ID`, `--max-documents N` | Bound and filter a focused slice |
 | `--model ID`, `--cluster-model ID`, `--model-base-url URL`, `--api-key-env NAME` | Select the approved model endpoint and the environment variable containing its key |
-| `--doc-type TYPE` | `api`, `architecture`, `user-guide`, `developer`, or `functional`; `functional` emphasizes configured business behavior and decisions |
+| `--doc-type TYPE` | `api`, `architecture`, `user-guide`, `developer`, or `functional`; `functional` explains business behavior plus evidenced REST, data, and external-service boundaries without deep implementation detail |
 | `--instructions TEXT` | Add reader or editorial instructions across planning, leaf pages, and overviews |
 | `--snapshot-dir PATH`, `--plan-file PATH` | Replay saved evidence or use a reviewed plan for the same evidence snapshot |
 | `--incremental-from PATH`, `--replan`, `--resume-existing` | Reuse compatible pages, replan from current evidence, or resume an interrupted run |
@@ -147,6 +147,8 @@ The documentation type and instructions are stored in the run manifest and
 plan. Changing either causes a fresh plan and page generation for that scope;
 it does not invalidate the underlying PEGA evidence cache. The matching
 `generate_pega_docs` MCP tool accepts `doc_type` and `instructions` fields.
+The functional HTML viewer hides its raw Evidence navigation and citations;
+the source Markdown and inventories remain available in the run for audit.
 
 ```bash
 codewiki pega-generate --help

@@ -147,6 +147,7 @@ class PegaGraphProvider:
         self._selected_document_ids: set[str] = set()
         self._entities: dict[str, PegaEntity] = {}
         self._relationships: dict[str, PegaRelationship] = {}
+        self._unresolved_references: list[dict[str, Any]] = []
         self._requests: list[dict[str, Any]] = []
         self._evidence_reads: list[dict[str, Any]] = []
         self._specialist_events: list[dict[str, Any]] = []
@@ -753,6 +754,7 @@ class PegaGraphProvider:
         self._selected_document_ids.clear()
         self._entities.clear()
         self._relationships.clear()
+        self._unresolved_references = list(package.get("unresolved_references") or [])
         for document_id, manifest_entry in documents.items():
             self._check_id(document_id, "document")
             if not isinstance(manifest_entry, dict):
@@ -833,6 +835,7 @@ class PegaGraphProvider:
         self._entities = selected_entities
         self._relationships = selected_relationships
         self._selected_document_ids = set(documents)
+        self._unresolved_references = list(package.get("unresolved_references") or [])
 
     def codewiki_components(self, package: dict[str, Any]) -> dict[str, Node]:
         """Expose a directed dependency view while retaining typed edges in the package.
